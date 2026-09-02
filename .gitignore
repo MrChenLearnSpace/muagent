@@ -82,6 +82,7 @@ data/
 *.db
 *.db-shm
 *.db-wal
+muagents.settings.local.json
 *.sqlite
 *.sqlite3
 

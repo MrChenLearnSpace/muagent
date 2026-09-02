@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.10.0" />
+    <PackageReference Include="xunit" Version="2.9.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference>
+    <ProjectReference Include="..\..\src\MuAgents.Abstractions\MuAgents.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\MuAgents.Core\MuAgents.Core.csproj" />
+    <ProjectReference Include="..\..\src\MuAgents.Tools\MuAgents.Tools.csproj" />
+    <ProjectReference Include="..\..\src\MuAgents.Persistence\MuAgents.Persistence.csproj" />
+    <ProjectReference Include="..\..\src\MuAgents.Content\MuAgents.Content.csproj" />
+    <ProjectReference Include="..\..\src\MuAgents.Web\MuAgents.Web.csproj" />
+    <ProjectReference Include="..\..\src\MuAgents.Skills\MuAgents.Skills.csproj" />
+    <ProjectReference Include="..\..\src\MuAgents.OpenAI\MuAgents.OpenAI.csproj" />
+  </ItemGroup>
+</Project>

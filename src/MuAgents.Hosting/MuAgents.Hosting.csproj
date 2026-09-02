@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\MuAgents.Abstractions\MuAgents.Abstractions.csproj" />
+    <ProjectReference Include="..\MuAgents.Core\MuAgents.Core.csproj" />
+    <ProjectReference Include="..\MuAgents.OpenAI\MuAgents.OpenAI.csproj" />
+    <ProjectReference Include="..\MuAgents.Persistence\MuAgents.Persistence.csproj" />
+    <ProjectReference Include="..\MuAgents.Tools\MuAgents.Tools.csproj" />
+    <ProjectReference Include="..\MuAgents.Content\MuAgents.Content.csproj" />
+    <ProjectReference Include="..\MuAgents.Ocr\MuAgents.Ocr.csproj" />
+    <ProjectReference Include="..\MuAgents.Web\MuAgents.Web.csproj" />
+    <ProjectReference Include="..\MuAgents.Skills\MuAgents.Skills.csproj" />
+    <ProjectReference Include="..\MuAgents.Mcp\MuAgents.Mcp.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>

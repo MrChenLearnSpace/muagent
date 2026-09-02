@@ -1,0 +1,20 @@
+{
+  "MuAgents": {
+    "Model": {
+      "Protocol": "Responses",
+      "BaseUrl": "https://api.openai.com/v1/",
+      "Endpoint": "responses",
+      "ApiKey": "",
+      "Model": "gpt-5-mini",
+      "MaxContextTokens": 128000,
+      "MaxOutputTokens": 4096,
+      "SupportsVision": true,
+      "SupportsTools": true
+    },
+    "Web": {
+      "SearchEndpoint": "",
+      "ApiKey": "",
+      "ApiKeyHeader": "X-API-Key"
+    }
+  }
+}
