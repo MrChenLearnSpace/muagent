@@ -74,6 +74,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentTool, CurrentTimeTool>();
         services.AddSingleton<IToolGateway, ToolGateway>();
         services.AddSingleton<IConversationStore, SqliteConversationStore>();
+        services.AddSingleton<IIdentityStore, SqliteIdentityStore>();
         services.AddSingleton<IOcrEngine, TesseractOcrEngine>();
         services.AddSingleton<IContentReader, MarkdownContentReader>();
         services.AddSingleton<IContentReader, PdfContentReader>();

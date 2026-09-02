@@ -5,5 +5,6 @@
     <ProjectReference Include="..\..\src\MuAgents.Mcp\MuAgents.Mcp.csproj" />
     <Content Update="muagents.settings.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Update="muagents.settings.local.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('muagents.settings.local.json')" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.7" />
   </ItemGroup>
 </Project>

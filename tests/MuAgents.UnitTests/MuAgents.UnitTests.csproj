@@ -12,5 +12,6 @@
     <ProjectReference Include="..\..\src\MuAgents.Web\MuAgents.Web.csproj" />
     <ProjectReference Include="..\..\src\MuAgents.Skills\MuAgents.Skills.csproj" />
     <ProjectReference Include="..\..\src\MuAgents.OpenAI\MuAgents.OpenAI.csproj" />
+    <ProjectReference Include="..\..\apps\MuAgents.App\MuAgents.App.csproj" />
   </ItemGroup>
 </Project>

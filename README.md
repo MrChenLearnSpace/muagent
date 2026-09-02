@@ -18,7 +18,7 @@ dotnet run --project apps/MuAgents.Cli -- --url http://localhost:5000/
 
 Model credentials and endpoint selection are loaded from `muagents.settings.json` and the optional `muagents.settings.local.json` beside the program. Environment variables are not used for model credentials.
 
-The current `X-Tenant-Id` and `X-User-Id` headers establish isolation context but are not authentication. Cookie/JWT authentication remains part of M4.
+Protected APIs require a Cookie or JWT Bearer identity. Tenant and user IDs are taken only from validated claims; request headers can no longer select an arbitrary tenant.
 
 ## Configuration
 
@@ -33,6 +33,9 @@ Sensitive endpoint configuration belongs in `apps/MuAgents.App/muagents.settings
       "Endpoint": "responses",
       "ApiKey": "your-key",
       "Model": "model-name"
+    },
+    "Authentication": {
+      "JwtSigningKey": "replace-with-at-least-32-random-characters"
     },
     "Web": {
       "SearchEndpoint": "https://search.example/api?q={query}&count={count}",
@@ -61,3 +64,15 @@ MCP servers are configured in `MuAgents.Mcp.Servers`. Both `StreamableHttp` and 
 ```
 
 Skill directories use the `skills/<name>/SKILL.md` layout. Scripts are denied, approval-gated, or allowed according to `MuAgents.Skills.ScriptPolicy`; approval-gated scripts require `Approved: true` on the script API request.
+
+## First login
+
+Set a random JWT signing key in `muagents.settings.local.json` before starting the application. Create the first local administrator and tenant exactly once:
+
+```powershell
+Invoke-RestMethod -Method Post http://localhost:5000/api/v1/auth/bootstrap `
+  -ContentType application/json `
+  -Body '{"userName":"admin","password":"a-long-unique-password","tenantName":"Local"}'
+```
+
+Then call `/api/v1/auth/login`, or start the CLI with `--bootstrap` on its first run. The login response contains a tenant-scoped JWT. Pass `useCookie: true` to also create an HTTP-only, same-site authentication cookie.

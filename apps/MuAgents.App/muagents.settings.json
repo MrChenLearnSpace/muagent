@@ -15,6 +15,15 @@
       "SearchEndpoint": "",
       "ApiKey": "",
       "ApiKeyHeader": "X-API-Key"
+    },
+    "Authentication": {
+      "Issuer": "MuAgents",
+      "Audience": "MuAgents.Api",
+      "JwtSigningKey": "",
+      "AccessTokenMinutes": 60,
+      "CookieDays": 7,
+      "MinimumPasswordLength": 12,
+      "DataProtectionKeysPath": "data/keys"
     }
   }
 }

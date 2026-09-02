@@ -1,5 +1,15 @@
+using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+using System.Threading.RateLimiting;
 using MuAgents.Abstractions;
 using MuAgents.Core;
 using MuAgents.Hosting;
@@ -7,19 +17,173 @@ using MuAgents.OpenAI;
 using MuAgents.Mcp;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 builder.Configuration
     .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "muagents.settings.json"), optional: false, reloadOnChange: true)
     .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "muagents.settings.local.json"), optional: true, reloadOnChange: true);
 builder.Services.AddMuAgents(builder.Configuration);
 builder.Services.AddProblemDetails();
+var authenticationSection = builder.Configuration.GetSection("MuAgents:Authentication");
+var configuredAuthentication = authenticationSection.Get<AuthenticationOptions>() ?? new AuthenticationOptions();
+builder.Services.AddOptions<AuthenticationOptions>()
+    .Bind(authenticationSection)
+    .Validate(options => options.JwtSigningKey.Length >= 32, "JWT signing key must contain at least 32 characters.")
+    .Validate(options => options.AccessTokenMinutes is >= 5 and <= 1440, "Access token lifetime must be 5-1440 minutes.")
+    .Validate(options => options.MinimumPasswordLength is >= 12 and <= 128, "Minimum password length must be 12-128.")
+    .ValidateOnStart();
+builder.Services.Configure<PasswordHasherOptions>(options => options.IterationCount = 210_000);
+var dataProtectionPath = Path.IsPathRooted(configuredAuthentication.DataProtectionKeysPath)
+    ? configuredAuthentication.DataProtectionKeysPath
+    : Path.Combine(AppContext.BaseDirectory, configuredAuthentication.DataProtectionKeysPath);
+Directory.CreateDirectory(dataProtectionPath);
+var dataProtection = builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
+    .SetApplicationName("MuAgents");
+if (OperatingSystem.IsWindows()) dataProtection.ProtectKeysWithDpapi();
+builder.Services.AddSingleton<IPasswordHasher<UserAccount>, PasswordHasher<UserAccount>>();
+builder.Services.AddScoped<LocalAuthenticationService>();
+var signingKey = configuredAuthentication.JwtSigningKey.Length >= 32
+    ? Encoding.UTF8.GetBytes(configuredAuthentication.JwtSigningKey)
+    : new byte[32];
+builder.Services
+    .AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = "MuAgents.Auth";
+        options.DefaultChallengeScheme = "MuAgents.Auth";
+    })
+    .AddPolicyScheme("MuAgents.Auth", "Cookie or JWT", options =>
+    {
+        options.ForwardDefaultSelector = context =>
+            context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                ? JwtBearerDefaults.AuthenticationScheme
+                : CookieAuthenticationDefaults.AuthenticationScheme;
+    })
+    .AddCookie(options =>
+    {
+        options.Cookie.Name = "MuAgents.Auth";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.SlidingExpiration = true;
+        options.ExpireTimeSpan = TimeSpan.FromDays(configuredAuthentication.CookieDays);
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
+    })
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = configuredAuthentication.Issuer,
+            ValidateAudience = true,
+            ValidAudience = configuredAuthentication.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(signingKey),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(1),
+            NameClaimType = ClaimTypes.Name,
+            RoleClaimType = ClaimTypes.Role
+        };
+    });
+builder.Services.AddAuthorization();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("authentication", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 
 var app = builder.Build();
 app.UseExceptionHandler();
+app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
 
 await app.Services.GetRequiredService<IConversationStore>().InitializeAsync();
+await app.Services.GetRequiredService<IIdentityStore>().InitializeAsync();
 
-var api = app.MapGroup("/api/v1");
-api.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+var publicApi = app.MapGroup("/api/v1");
+publicApi.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+publicApi.MapPost("/auth/bootstrap", async (
+    BootstrapRequest request,
+    IIdentityStore store,
+    LocalAuthenticationService authentication,
+    CancellationToken cancellationToken) =>
+{
+    if (await store.HasUsersAsync(cancellationToken))
+        return Results.Conflict(new { message = "Identity bootstrap has already been completed." });
+    var result = await authentication.BootstrapAsync(
+        request.UserName, request.Password, request.TenantName, cancellationToken);
+    return Results.Created("/api/v1/auth/login", new
+    {
+        user = new { result.User.Id, result.User.UserName },
+        tenant = new { result.Membership.TenantId, result.Membership.TenantName, result.Membership.Role }
+    });
+}).RequireRateLimiting("authentication");
+publicApi.MapPost("/auth/login", async (
+    HttpContext http,
+    LoginRequest request,
+    LocalAuthenticationService authentication,
+    IOptions<AuthenticationOptions> options,
+    CancellationToken cancellationToken) =>
+{
+    var session = await authentication.LoginAsync(
+        request.UserName, request.Password, request.TenantId,
+        http.Connection.RemoteIpAddress?.ToString(), cancellationToken);
+    if (session is null) return Results.Unauthorized();
+    if (request.UseCookie)
+    {
+        await http.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            session.Principal,
+            new AuthenticationProperties
+            {
+                IsPersistent = true,
+                ExpiresUtc = DateTimeOffset.UtcNow.AddDays(options.Value.CookieDays),
+                AllowRefresh = true
+            });
+    }
+    return Results.Ok(new
+    {
+        accessToken = session.AccessToken,
+        tokenType = "Bearer",
+        expiresAt = session.ExpiresAt,
+        user = new { session.User.Id, session.User.UserName, session.User.IsSystemAdmin },
+        tenant = new { session.Membership.TenantId, session.Membership.TenantName, session.Membership.Role }
+    });
+}).RequireRateLimiting("authentication");
+
+var api = app.MapGroup("/api/v1").RequireAuthorization();
+api.MapPost("/auth/logout", async (HttpContext http) =>
+{
+    await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+    return Results.NoContent();
+});
+api.MapGet("/auth/me", (HttpContext http) => Results.Ok(new
+{
+    userId = http.User.FindFirstValue(ClaimTypes.NameIdentifier),
+    userName = http.User.Identity?.Name,
+    tenantId = http.User.FindFirstValue("tenant_id"),
+    tenantName = http.User.FindFirstValue("tenant_name"),
+    role = http.User.FindFirstValue(ClaimTypes.Role)
+}));
 
 api.MapPost("/conversations", async (
     HttpContext http,
@@ -153,6 +317,8 @@ api.MapGet("/mcp/{server}/tools", async (
 app.Run();
 
 public sealed record CreateConversationRequest(string? Title);
+public sealed record BootstrapRequest(string UserName, string Password, string TenantName);
+public sealed record LoginRequest(string UserName, string Password, string? TenantId = null, bool UseCookie = false);
 public sealed record SendMessageRequest(
     string? Text,
     string? Model = null,
@@ -185,11 +351,11 @@ public sealed record RequestIdentity(string TenantId, string UserId)
 {
     public static RequestIdentity From(HttpContext context)
     {
-        var tenantId = context.Request.Headers["X-Tenant-Id"].ToString();
-        var userId = context.Request.Headers["X-User-Id"].ToString();
+        var tenantId = context.User.FindFirstValue("tenant_id");
+        var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(userId))
         {
-            throw new BadHttpRequestException("X-Tenant-Id and X-User-Id headers are required.");
+            throw new UnauthorizedAccessException("Authenticated tenant and user claims are required.");
         }
         return new RequestIdentity(tenantId, userId);
     }
