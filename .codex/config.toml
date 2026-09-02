@@ -1,0 +1,9 @@
+﻿[mcp_servers.rimworld]
+enabled = false
+
+[mcp_servers.rimworld-agent]
+enabled = false
+
+[mcp_servers.unityMCP]
+enabled = false
+
