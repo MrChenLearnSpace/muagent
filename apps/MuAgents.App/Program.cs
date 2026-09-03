@@ -95,7 +95,8 @@ builder.Services
             RoleClaimType = ClaimTypes.Role
         };
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+    options.AddPolicy("system-admin", policy => policy.RequireClaim("system_admin", "true")));
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -182,8 +183,91 @@ api.MapGet("/auth/me", (HttpContext http) => Results.Ok(new
     userName = http.User.Identity?.Name,
     tenantId = http.User.FindFirstValue("tenant_id"),
     tenantName = http.User.FindFirstValue("tenant_name"),
-    role = http.User.FindFirstValue(ClaimTypes.Role)
+    role = http.User.FindFirstValue(ClaimTypes.Role),
+    isSystemAdmin = http.User.HasClaim("system_admin", "true")
 }));
+api.MapGet("/auth/tenants", async (
+    HttpContext http,
+    IIdentityStore store,
+    CancellationToken cancellationToken) =>
+{
+    var identity = RequestIdentity.From(http);
+    return Results.Ok(await store.GetMembershipsAsync(identity.UserId, cancellationToken));
+});
+
+api.MapPost("/admin/users", async Task<IResult> (
+    CreateUserRequest request,
+    LocalAuthenticationService authentication,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var user = await authentication.CreateUserAsync(
+            request.UserName, request.Password, request.IsSystemAdmin, cancellationToken);
+        return Results.Created($"/api/v1/admin/users/{user.Id}", new
+        {
+            user.Id,
+            user.UserName,
+            user.IsSystemAdmin,
+            user.IsDisabled,
+            user.CreatedAt
+        });
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.Conflict(new { message = exception.Message });
+    }
+}).RequireAuthorization("system-admin");
+
+api.MapPost("/admin/tenants", async Task<IResult> (
+    HttpContext http,
+    CreateTenantRequest request,
+    IIdentityStore store,
+    LocalAuthenticationService authentication,
+    CancellationToken cancellationToken) =>
+{
+    var identity = RequestIdentity.From(http);
+    var ownerUserId = identity.UserId;
+    if (!string.IsNullOrWhiteSpace(request.OwnerUserName))
+    {
+        var owner = await store.FindUserAsync(request.OwnerUserName, cancellationToken);
+        if (owner is null) return Results.NotFound(new { message = "The requested owner was not found." });
+        ownerUserId = owner.Id;
+    }
+    try
+    {
+        var tenant = await authentication.CreateTenantAsync(request.Name, ownerUserId, cancellationToken);
+        return Results.Created($"/api/v1/admin/tenants/{tenant.Id}", tenant);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.Conflict(new { message = exception.Message });
+    }
+}).RequireAuthorization("system-admin");
+
+api.MapPut("/tenants/{tenantId}/members", async Task<IResult> (
+    HttpContext http,
+    string tenantId,
+    SetMembershipRequest request,
+    LocalAuthenticationService authentication,
+    CancellationToken cancellationToken) =>
+{
+    if (!TenantAccess.CanManageMembers(http.User, tenantId)) return Results.Forbid();
+    try
+    {
+        var membership = await authentication.SetMembershipAsync(
+            tenantId, request.UserName, request.Role, cancellationToken);
+        return Results.Ok(membership);
+    }
+    catch (KeyNotFoundException exception)
+    {
+        return Results.NotFound(new { message = exception.Message });
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.Conflict(new { message = exception.Message });
+    }
+});
 
 api.MapPost("/conversations", async (
     HttpContext http,
@@ -319,6 +403,9 @@ app.Run();
 public sealed record CreateConversationRequest(string? Title);
 public sealed record BootstrapRequest(string UserName, string Password, string TenantName);
 public sealed record LoginRequest(string UserName, string Password, string? TenantId = null, bool UseCookie = false);
+public sealed record CreateUserRequest(string UserName, string Password, bool IsSystemAdmin = false);
+public sealed record CreateTenantRequest(string Name, string? OwnerUserName = null);
+public sealed record SetMembershipRequest(string UserName, string Role);
 public sealed record SendMessageRequest(
     string? Text,
     string? Model = null,
@@ -359,4 +446,12 @@ public sealed record RequestIdentity(string TenantId, string UserId)
         }
         return new RequestIdentity(tenantId, userId);
     }
+}
+
+public static class TenantAccess
+{
+    public static bool CanManageMembers(ClaimsPrincipal principal, string tenantId) =>
+        principal.HasClaim("system_admin", "true") ||
+        (string.Equals(principal.FindFirstValue("tenant_id"), tenantId, StringComparison.Ordinal) &&
+         string.Equals(principal.FindFirstValue(ClaimTypes.Role), "Owner", StringComparison.Ordinal));
 }

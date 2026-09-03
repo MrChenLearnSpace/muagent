@@ -124,6 +124,147 @@ public sealed class SqliteIdentityStore(IOptions<PersistenceOptions> options) : 
         return new BootstrapIdentityResult(user, new TenantMembership(tenantId, tenantName, userId, "Owner", now));
     }
 
+    public async Task<UserAccount> CreateUserAsync(
+        string userName,
+        string passwordHash,
+        bool isSystemAdmin = false,
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var user = new UserAccount(
+            Guid.NewGuid().ToString("N"),
+            userName,
+            Normalize(userName),
+            passwordHash,
+            isSystemAdmin,
+            false,
+            Guid.NewGuid().ToString("N"),
+            DateTimeOffset.UtcNow);
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO users(id, user_name, normalized_user_name, password_hash, is_system_admin, is_disabled, security_stamp, created_at)
+            VALUES($id, $name, $normalized, $hash, $admin, 0, $stamp, $created);
+            """;
+        command.Parameters.AddWithValue("$id", user.Id);
+        command.Parameters.AddWithValue("$name", user.UserName);
+        command.Parameters.AddWithValue("$normalized", user.NormalizedUserName);
+        command.Parameters.AddWithValue("$hash", user.PasswordHash);
+        command.Parameters.AddWithValue("$admin", user.IsSystemAdmin);
+        command.Parameters.AddWithValue("$stamp", user.SecurityStamp);
+        command.Parameters.AddWithValue("$created", user.CreatedAt.ToString("O"));
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            throw new InvalidOperationException("A user with this name already exists.", exception);
+        }
+        return user;
+    }
+
+    public async Task<TenantAccount> CreateTenantAsync(
+        string tenantName,
+        string ownerUserId,
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var tenant = new TenantAccount(Guid.NewGuid().ToString("N"), tenantName, DateTimeOffset.UtcNow);
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = """
+            INSERT INTO tenants(id, name, normalized_name, created_at)
+            VALUES($id, $name, $normalized, $created);
+            INSERT INTO tenant_memberships(tenant_id, user_id, role, created_at)
+            VALUES($id, $owner, 'Owner', $created);
+            """;
+        command.Parameters.AddWithValue("$id", tenant.Id);
+        command.Parameters.AddWithValue("$name", tenant.Name);
+        command.Parameters.AddWithValue("$normalized", Normalize(tenant.Name));
+        command.Parameters.AddWithValue("$owner", ownerUserId);
+        command.Parameters.AddWithValue("$created", tenant.CreatedAt.ToString("O"));
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            throw new InvalidOperationException(
+                "The tenant name is already in use or the owner does not exist.", exception);
+        }
+        return tenant;
+    }
+
+    public async Task<TenantMembership> SetMembershipAsync(
+        string tenantId,
+        string userId,
+        string role,
+        CancellationToken cancellationToken = default)
+    {
+        if (role is not ("Owner" or "Admin" or "Member"))
+            throw new ArgumentOutOfRangeException(nameof(role), "Role must be Owner, Admin, or Member.");
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var now = DateTimeOffset.UtcNow;
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        if (role != "Owner")
+        {
+            command.CommandText = """
+                SELECT CASE WHEN
+                    EXISTS(SELECT 1 FROM tenant_memberships
+                           WHERE tenant_id = $tenant AND user_id = $user AND role = 'Owner')
+                    AND (SELECT COUNT(*) FROM tenant_memberships
+                         WHERE tenant_id = $tenant AND role = 'Owner') <= 1
+                THEN 1 ELSE 0 END;
+                """;
+            command.Parameters.AddWithValue("$tenant", tenantId);
+            command.Parameters.AddWithValue("$user", userId);
+            if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) == 1)
+                throw new InvalidOperationException("A tenant must retain at least one owner.");
+            command.Parameters.Clear();
+        }
+        command.CommandText = """
+            INSERT INTO tenant_memberships(tenant_id, user_id, role, created_at)
+            VALUES($tenant, $user, $role, $created)
+            ON CONFLICT(tenant_id, user_id) DO UPDATE SET role = excluded.role;
+            """;
+        command.Parameters.AddWithValue("$tenant", tenantId);
+        command.Parameters.AddWithValue("$user", userId);
+        command.Parameters.AddWithValue("$role", role);
+        command.Parameters.AddWithValue("$created", now.ToString("O"));
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            throw new InvalidOperationException("The tenant or user does not exist.", exception);
+        }
+
+        command.Parameters.Clear();
+        command.CommandText = """
+            SELECT m.tenant_id, t.name, m.user_id, m.role, m.created_at
+            FROM tenant_memberships m JOIN tenants t ON t.id = m.tenant_id
+            WHERE m.tenant_id = $tenant AND m.user_id = $user;
+            """;
+        command.Parameters.AddWithValue("$tenant", tenantId);
+        command.Parameters.AddWithValue("$user", userId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException("The membership could not be read after it was saved.");
+        var membership = new TenantMembership(
+            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), ParseDate(reader.GetString(4)));
+        await reader.DisposeAsync().ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return membership;
+    }
+
     public async Task<UserAccount?> FindUserAsync(string userName, CancellationToken cancellationToken = default)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);

@@ -76,3 +76,29 @@ Invoke-RestMethod -Method Post http://localhost:5000/api/v1/auth/bootstrap `
 ```
 
 Then call `/api/v1/auth/login`, or start the CLI with `--bootstrap` on its first run. The login response contains a tenant-scoped JWT. Pass `useCookie: true` to also create an HTTP-only, same-site authentication cookie.
+
+## User and tenant administration
+
+The bootstrap account is a system administrator. Use its bearer token to create additional users and tenants:
+
+```powershell
+$headers = @{ Authorization = "Bearer $token" }
+
+Invoke-RestMethod -Method Post http://localhost:5000/api/v1/admin/users `
+  -Headers $headers -ContentType application/json `
+  -Body '{"userName":"operator","password":"another-long-password"}'
+
+Invoke-RestMethod -Method Post http://localhost:5000/api/v1/admin/tenants `
+  -Headers $headers -ContentType application/json `
+  -Body '{"name":"Operations","ownerUserName":"admin"}'
+```
+
+A system administrator, or an `Owner` authenticated into the matching tenant, can add or update a tenant member. Roles are `Owner`, `Admin`, and `Member`:
+
+```powershell
+Invoke-RestMethod -Method Put "http://localhost:5000/api/v1/tenants/$tenantId/members" `
+  -Headers $headers -ContentType application/json `
+  -Body '{"userName":"operator","role":"Member"}'
+```
+
+`GET /api/v1/auth/tenants` lists the authenticated user's memberships. When a user belongs to more than one tenant, pass the selected `tenantId` to `/api/v1/auth/login`; the resulting token can access only that tenant.

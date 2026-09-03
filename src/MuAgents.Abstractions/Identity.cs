@@ -17,6 +17,11 @@ public sealed record TenantMembership(
     string Role,
     DateTimeOffset CreatedAt);
 
+public sealed record TenantAccount(
+    string Id,
+    string Name,
+    DateTimeOffset CreatedAt);
+
 public sealed record BootstrapIdentityResult(UserAccount User, TenantMembership Membership);
 
 public interface IIdentityStore
@@ -27,6 +32,20 @@ public interface IIdentityStore
         string userName,
         string passwordHash,
         string tenantName,
+        CancellationToken cancellationToken = default);
+    Task<UserAccount> CreateUserAsync(
+        string userName,
+        string passwordHash,
+        bool isSystemAdmin = false,
+        CancellationToken cancellationToken = default);
+    Task<TenantAccount> CreateTenantAsync(
+        string tenantName,
+        string ownerUserId,
+        CancellationToken cancellationToken = default);
+    Task<TenantMembership> SetMembershipAsync(
+        string tenantId,
+        string userId,
+        string role,
         CancellationToken cancellationToken = default);
     Task<UserAccount?> FindUserAsync(string userName, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<TenantMembership>> GetMembershipsAsync(

@@ -44,11 +44,57 @@ public sealed class LocalAuthenticationService(
     {
         ValidateUserName(userName);
         ValidatePassword(password);
-        if (string.IsNullOrWhiteSpace(tenantName) || tenantName.Length > 128)
-            throw new BadHttpRequestException("Tenant name must contain 1-128 characters.");
+        ValidateTenantName(tenantName);
         var provisional = new UserAccount("", userName.Trim(), userName.Trim().ToUpperInvariant(), "", true, false, "", DateTimeOffset.UtcNow);
         var hash = passwordHasher.HashPassword(provisional, password);
         return await store.BootstrapAsync(userName.Trim(), hash, tenantName.Trim(), cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<UserAccount> CreateUserAsync(
+        string userName,
+        string password,
+        bool isSystemAdmin,
+        CancellationToken cancellationToken)
+    {
+        ValidateUserName(userName);
+        ValidatePassword(password);
+        var trimmedName = userName.Trim();
+        var provisional = new UserAccount(
+            "", trimmedName, trimmedName.ToUpperInvariant(), "", isSystemAdmin, false, "", DateTimeOffset.UtcNow);
+        var hash = passwordHasher.HashPassword(provisional, password);
+        return await store.CreateUserAsync(trimmedName, hash, isSystemAdmin, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<TenantAccount> CreateTenantAsync(
+        string tenantName,
+        string ownerUserId,
+        CancellationToken cancellationToken)
+    {
+        ValidateTenantName(tenantName);
+        if (string.IsNullOrWhiteSpace(ownerUserId))
+            throw new BadHttpRequestException("A tenant owner is required.");
+        return store.CreateTenantAsync(tenantName.Trim(), ownerUserId, cancellationToken);
+    }
+
+    public async Task<TenantMembership> SetMembershipAsync(
+        string tenantId,
+        string userName,
+        string role,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new BadHttpRequestException("A tenant ID is required.");
+        ValidateUserName(userName);
+        var normalizedRole = role?.Trim().ToUpperInvariant() switch
+        {
+            "OWNER" => "Owner",
+            "ADMIN" => "Admin",
+            "MEMBER" => "Member",
+            _ => throw new BadHttpRequestException("Role must be Owner, Admin, or Member.")
+        };
+        var user = await store.FindUserAsync(userName, cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException("The requested user was not found.");
+        return await store.SetMembershipAsync(tenantId, user.Id, normalizedRole, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<AuthenticatedSession?> LoginAsync(
@@ -123,5 +169,11 @@ public sealed class LocalAuthenticationService(
     {
         if (string.IsNullOrWhiteSpace(userName) || userName.Length is < 3 or > 64 || userName.Any(char.IsControl))
             throw new BadHttpRequestException("User name must contain 3-64 printable characters.");
+    }
+
+    private static void ValidateTenantName(string tenantName)
+    {
+        if (string.IsNullOrWhiteSpace(tenantName) || tenantName.Length > 128 || tenantName.Any(char.IsControl))
+            throw new BadHttpRequestException("Tenant name must contain 1-128 printable characters.");
     }
 }
