@@ -66,6 +66,10 @@ public sealed class ToolGateway : IToolGateway
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        var toolTag = new KeyValuePair<string, object?>("tool", call.Name);
+        MuAgentsTelemetry.ToolInvocations.Add(1, toolTag);
+        using var activity = MuAgentsTelemetry.Activities.StartActivity("tool.invoke", ActivityKind.Internal);
+        activity?.SetTag("gen_ai.tool.name", call.Name);
         if (!_tools.TryGetValue(call.Name, out var tool))
         {
             return Finish(new ToolResult($"Tool '{call.Name}' is not registered.", true));
@@ -107,8 +111,23 @@ public sealed class ToolGateway : IToolGateway
             }
         }
 
-        ToolInvocationResult Finish(ToolResult result) =>
-            new(call.CallId, call.Name, result, stopwatch.Elapsed);
+        ToolInvocationResult Finish(ToolResult result)
+        {
+            stopwatch.Stop();
+            var outcome = result.IsError ? "error" : "success";
+            activity?.SetTag("muagents.outcome", outcome);
+            activity?.SetTag("muagents.tool.truncated", result.IsTruncated);
+            if (result.IsError)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error);
+                MuAgentsTelemetry.ToolFailures.Add(1, toolTag);
+            }
+            MuAgentsTelemetry.ToolDuration.Record(
+                stopwatch.Elapsed.TotalSeconds,
+                toolTag,
+                new KeyValuePair<string, object?>("outcome", outcome));
+            return new ToolInvocationResult(call.CallId, call.Name, result, stopwatch.Elapsed);
+        }
     }
 
     private ToolResult Limit(ToolResult result)

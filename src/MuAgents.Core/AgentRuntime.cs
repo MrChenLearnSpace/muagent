@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
@@ -51,11 +52,20 @@ public sealed class AgentRuntime(
             throw new ArgumentException("Message text or an image is required.", nameof(request));
         }
 
+        var startedAt = Stopwatch.GetTimestamp();
+        var modelTag = new KeyValuePair<string, object?>("model", request.Parameters.Model);
+        MuAgentsTelemetry.AgentRuns.Add(1, modelTag);
+        using var activity = MuAgentsTelemetry.Activities.StartActivity("agent.run", ActivityKind.Internal);
+        activity?.SetTag("gen_ai.request.model", request.Parameters.Model);
+        activity?.SetTag("muagents.has_images", request.Images is { Count: > 0 });
+        var runCompleted = false;
         var gateKey = $"{request.TenantId}\n{request.ConversationId}";
         var gate = ConversationLocks.GetOrAdd(gateKey, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var gateEntered = false;
         try
         {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateEntered = true;
             var conversation = await conversations.GetAsync(
                 request.TenantId,
                 request.ConversationId,
@@ -83,6 +93,14 @@ public sealed class AgentRuntime(
                 var plan = contextManager.Prepare(history, tools.Definitions, request.Parameters);
                 if (plan.WasCompacted)
                 {
+                    MuAgentsTelemetry.Compactions.Add(1, modelTag);
+                    activity?.AddEvent(new ActivityEvent(
+                        "context.compacted",
+                        tags: new ActivityTagsCollection
+                        {
+                            ["muagents.context.before_tokens"] = plan.OriginalEstimatedTokens,
+                            ["muagents.context.after_tokens"] = plan.EstimatedTokens
+                        }));
                     yield return new CompactionStartedEvent(plan.OriginalEstimatedTokens);
                     yield return new CompactionCompletedEvent(plan.OriginalEstimatedTokens, plan.EstimatedTokens);
                 }
@@ -143,6 +161,7 @@ public sealed class AgentRuntime(
 
                 if (calls.Count == 0)
                 {
+                    runCompleted = true;
                     yield return new CompletedEvent(finishReason);
                     yield break;
                 }
@@ -150,6 +169,7 @@ public sealed class AgentRuntime(
                 if (iteration == _options.MaxToolIterations)
                 {
                     yield return new WarningEvent("Maximum tool iterations reached.");
+                    runCompleted = true;
                     yield return new CompletedEvent("max_tool_iterations");
                     yield break;
                 }
@@ -184,7 +204,20 @@ public sealed class AgentRuntime(
         }
         finally
         {
-            gate.Release();
+            if (gateEntered) gate.Release();
+            var outcome = runCompleted
+                ? "success"
+                : cancellationToken.IsCancellationRequested ? "cancelled" : "error";
+            activity?.SetTag("muagents.outcome", outcome);
+            if (outcome == "error")
+            {
+                activity?.SetStatus(ActivityStatusCode.Error);
+                MuAgentsTelemetry.AgentFailures.Add(1, modelTag);
+            }
+            MuAgentsTelemetry.AgentDuration.Record(
+                Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
+                modelTag,
+                new KeyValuePair<string, object?>("outcome", outcome));
             logger.LogDebug("Agent run finished for conversation {ConversationId}", request.ConversationId);
         }
     }

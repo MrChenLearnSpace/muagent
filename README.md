@@ -102,3 +102,7 @@ Invoke-RestMethod -Method Put "http://localhost:5000/api/v1/tenants/$tenantId/me
 ```
 
 `GET /api/v1/auth/tenants` lists the authenticated user's memberships. When a user belongs to more than one tenant, pass the selected `tenantId` to `/api/v1/auth/login`; the resulting token can access only that tenant.
+
+## Observability
+
+MuAgents emits .NET diagnostics through the `MuAgents` `ActivitySource` and `Meter`. Traces cover agent runs, model calls, and tool calls. Metrics cover run/request counts and durations, failures, context compactions, model token usage, and time to the first streamed model event. An OpenTelemetry host can subscribe to the source and meter without changes to the runtime. Every HTTP response also includes an `X-Trace-Id` header for correlation.

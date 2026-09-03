@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
@@ -17,18 +18,78 @@ public sealed class OpenAiCompatibleChatModel(
     private readonly OpenAiCompatibleOptions _options = options.Value;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public IAsyncEnumerable<ModelEvent> CompleteAsync(
+    public async IAsyncEnumerable<ModelEvent> CompleteAsync(
         AgentRequest request,
-        CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ValidateRequest(request);
-        return _options.Protocol switch
+        var completion = _options.Protocol switch
         {
             ModelProtocol.ChatCompletions => CompleteChatAsync(request, cancellationToken),
             ModelProtocol.Responses => CompleteResponsesAsync(request, cancellationToken),
             ModelProtocol.Messages => CompleteMessagesAsync(request, cancellationToken),
             _ => throw new MuAgentException(MuAgentErrorCategory.Configuration, "Unknown model protocol.")
         };
+        var modelTag = new KeyValuePair<string, object?>("model", request.Parameters.Model);
+        var protocolTag = new KeyValuePair<string, object?>("protocol", _options.Protocol.ToString());
+        var startedAt = Stopwatch.GetTimestamp();
+        MuAgentsTelemetry.ModelRequests.Add(1, modelTag, protocolTag);
+        using var activity = MuAgentsTelemetry.Activities.StartActivity("model.complete", ActivityKind.Client);
+        activity?.SetTag("gen_ai.request.model", request.Parameters.Model);
+        activity?.SetTag("muagents.model.protocol", _options.Protocol.ToString());
+        var completed = false;
+        var failed = false;
+        var firstEventObserved = false;
+        try
+        {
+            await using var enumerator = completion.GetAsyncEnumerator(cancellationToken);
+            while (true)
+            {
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    failed = !cancellationToken.IsCancellationRequested;
+                    throw;
+                }
+                if (!hasNext) break;
+
+                if (!firstEventObserved)
+                {
+                    firstEventObserved = true;
+                    MuAgentsTelemetry.ModelFirstEventDuration.Record(
+                        Stopwatch.GetElapsedTime(startedAt).TotalSeconds, modelTag, protocolTag);
+                    activity?.AddEvent(new ActivityEvent("model.first_event"));
+                }
+                if (enumerator.Current is ModelUsage usage)
+                {
+                    MuAgentsTelemetry.ModelInputTokens.Add(usage.InputTokens, modelTag, protocolTag);
+                    MuAgentsTelemetry.ModelOutputTokens.Add(usage.OutputTokens, modelTag, protocolTag);
+                }
+                yield return enumerator.Current;
+            }
+            completed = true;
+        }
+        finally
+        {
+            var outcome = completed
+                ? "success"
+                : cancellationToken.IsCancellationRequested ? "cancelled" : failed ? "error" : "abandoned";
+            activity?.SetTag("muagents.outcome", outcome);
+            if (failed)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error);
+                MuAgentsTelemetry.ModelFailures.Add(1, modelTag, protocolTag);
+            }
+            MuAgentsTelemetry.ModelDuration.Record(
+                Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
+                modelTag,
+                protocolTag,
+                new KeyValuePair<string, object?>("outcome", outcome));
+        }
     }
 
     private async IAsyncEnumerable<ModelEvent> CompleteChatAsync(

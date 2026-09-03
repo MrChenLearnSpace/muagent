@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
@@ -112,6 +113,16 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+app.Use(async (context, next) =>
+{
+    var traceId = Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;
+    context.Response.OnStarting(() =>
+    {
+        context.Response.Headers.TryAdd("X-Trace-Id", traceId);
+        return Task.CompletedTask;
+    });
+    await next();
+});
 app.UseExceptionHandler();
 app.UseRateLimiter();
 app.UseAuthentication();
