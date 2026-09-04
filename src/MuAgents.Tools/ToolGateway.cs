@@ -97,6 +97,11 @@ public sealed class ToolGateway : IToolGateway
         using (arguments)
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
+            if (arguments.RootElement.TryGetProperty("_muagents_error", out var protocolError) &&
+                protocolError.ValueKind == JsonValueKind.String)
+            {
+                return Finish(new ToolResult(protocolError.GetString()!, true));
+            }
             if (tool is not IManagesOwnToolTimeout) timeout.CancelAfter(_options.Timeout);
             try
             {

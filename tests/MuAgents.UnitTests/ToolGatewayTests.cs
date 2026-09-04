@@ -53,6 +53,22 @@ public sealed class ToolGatewayTests
         Assert.Equal("approval-call-42", tool.ToolCallId);
     }
 
+    [Fact]
+    public async Task InvokeAsync_ReturnsProtocolRecoveryErrorWithoutCallingTool()
+    {
+        var tool = new RecordingTool();
+        var gateway = new ToolGateway(
+            [tool], Options.Create(new ToolGatewayOptions()), NullLogger<ToolGateway>.Instance);
+
+        var results = await gateway.InvokeAsync(
+            [new ToolInvocation("1", "test.record", "{\"_muagents_error\":\"arguments were truncated\"}")],
+            new ToolExecutionContext("tenant", "conversation"));
+
+        Assert.True(results[0].Result.IsError);
+        Assert.Contains("truncated", results[0].Result.Content);
+        Assert.False(tool.WasCalled);
+    }
+
     private sealed class RecordingTool : IAgentTool
     {
         public bool WasCalled { get; private set; }

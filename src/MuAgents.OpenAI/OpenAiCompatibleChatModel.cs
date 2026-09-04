@@ -614,6 +614,28 @@ public sealed class OpenAiCompatibleChatModel(
         public ModelToolCall ToEvent() => new(
             Id.Length == 0 ? Guid.NewGuid().ToString("N") : Id.ToString(),
             Name.ToString(),
-            Arguments.Length == 0 ? "{}" : Arguments.ToString());
+            NormalizeArguments(Arguments.ToString()));
+
+        private static string NormalizeArguments(string arguments)
+        {
+            if (!string.IsNullOrWhiteSpace(arguments))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(arguments);
+                    if (document.RootElement.ValueKind == JsonValueKind.Object) return arguments;
+                }
+                catch (JsonException)
+                {
+                    // 工具参数常在模型达到输出 Token 上限时被截断。不能把残缺 JSON 写进会话，
+                    // 否则下一次 Responses 请求会在供应商解析历史时直接返回 500。
+                }
+            }
+
+            return JsonSerializer.Serialize(new
+            {
+                _muagents_error = "Tool arguments were empty, truncated, or invalid JSON. Retry with smaller arguments; split large files into separate HTML, CSS, and JavaScript files."
+            });
+        }
     }
 }

@@ -400,6 +400,7 @@ static string FormatFileWrite(string argumentsJson)
     {
         using var document = JsonDocument.Parse(argumentsJson);
         var root = document.RootElement;
+        if (TryGetString(root, "error", out var error)) return $"参数无效，将反馈模型重试：{error}";
         var path = TryGetString(root, "path", out var configuredPath) ? configuredPath : "<未指定>";
         var characters = root.TryGetProperty("characters", out var charactersElement) && charactersElement.TryGetInt32(out var count)
             ? count

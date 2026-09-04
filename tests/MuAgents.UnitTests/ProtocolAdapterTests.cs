@@ -63,6 +63,29 @@ public sealed class ProtocolAdapterTests
     }
 
     [Fact]
+    public async Task Responses_ReplacesTruncatedToolArgumentsWithValidRecoveryPayload()
+    {
+        const string stream = """
+            data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item-1","call_id":"call-1","name":"local.write_file","arguments":""}}
+
+            data: {"type":"response.function_call_arguments.delta","item_id":"item-1","delta":"{\"path\":\"index.html\",\"content\":\"unterminated"}
+
+            data: {"type":"response.completed","response":{"status":"completed"}}
+
+            data: [DONE]
+
+            """;
+        var (model, _) = Model(ModelProtocol.Responses, stream);
+
+        var call = Assert.Single((await CollectAsync(model)).OfType<ModelToolCall>());
+
+        using var arguments = System.Text.Json.JsonDocument.Parse(call.ArgumentsJson);
+        Assert.Equal(System.Text.Json.JsonValueKind.Object, arguments.RootElement.ValueKind);
+        Assert.Contains("truncated", arguments.RootElement.GetProperty("_muagents_error").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Messages_ParsesContentBlocksAndToolInput()
     {
         const string stream = """

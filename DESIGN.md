@@ -297,7 +297,7 @@ OpenAI 兼容配置至少包含：
 - Responses：`/responses`、流式事件、`input`/`output` items、函数工具和图片输入。
 - Messages：可配置 endpoint，支持 `messages`、独立 system 字段、content blocks、tool use/tool result 和事件流。
 
-三个适配器统一转换为内部 `AgentMessage` 和 `ModelEvent`，保持 Agent 循环一致。配置通过 `Protocol` 选择 `ChatCompletions`、`Responses` 或 `Messages`。密钥只允许来自环境变量、Secret Provider 或宿主注入，不写入普通配置和日志。
+三个适配器统一转换为内部 `AgentMessage` 和 `ModelEvent`，保持 Agent 循环一致。工具参数碎片聚合完成后必须验证为 JSON 对象；若输出 Token 上限造成参数截断，则保存合法的恢复错误并反馈模型拆小重试，绝不能把残缺 JSON 带入下一轮协议历史。配置通过 `Protocol` 选择 `ChatCompletions`、`Responses` 或 `Messages`。密钥只允许来自环境变量、Secret Provider 或宿主注入，不写入普通配置和日志。
 
 不同兼容服务对消息格式、工具调用、usage 和流式增量的实现经常不一致，因此增加 `ProviderCapabilities` 与协议兼容性测试，不仅依赖一个 `BaseUrl`。应用对外也提供版本化 HTTP API；它是 MuAgents 的应用接口，不假冒完整的模型供应商服务。
 

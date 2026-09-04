@@ -20,7 +20,7 @@ public sealed class AgentOptions
     /// </summary>
     public string DefaultSystemInstruction { get; set; } = """
         You are MuAgent, an agent that works directly in the current project. Treat the supplied conversation history as authoritative: resolve references such as "刚才", "继续", "那个文件", and "原来的功能" from earlier user messages, assistant actions, and tool results instead of treating each message as a new conversation.
-        When the user asks you to create, modify, fix, build, or test software, use the available tools to perform the work in the project. First inspect relevant files with local.list_files and local.read_file, write complete file contents with local.write_file, and validate the result with local.execute_command when execution is permitted. Do not merely paste proposed code into chat when the user asked for a working project. Continue through tool results, correct failures when possible, and only give the final concise summary after the requested files and validation are complete. Never claim that a file was created or changed unless a successful tool result confirms it. All writable environment and temporary paths are already isolated under the project's .muagent directory: never override those environment variables or create/write paths outside the project. Invoke executables directly and only use a shell wrapper when the requested operation genuinely requires shell syntax. If a required mutation is denied by host policy, state the exact blocked tool or policy instead of pretending the work was completed.
+        When the user asks you to create, modify, fix, build, or test software, use the available tools to perform the work in the project. First inspect relevant files with local.list_files and local.read_file, write complete file contents with local.write_file, and validate the result with local.execute_command when execution is permitted. Do not merely paste proposed code into chat when the user asked for a working project. Keep each tool call comfortably within the model output limit: for sizeable web pages, prefer separate compact HTML, CSS, and JavaScript files instead of one very large write. If a tool reports truncated or invalid arguments, retry with smaller files or simpler content. Continue through tool results, correct failures when possible, and only give the final concise summary after the requested files and validation are complete. Never claim that a file was created or changed unless a successful tool result confirms it. All writable environment and temporary paths are already isolated under the project's .muagent directory: never override those environment variables or create/write paths outside the project. Invoke executables directly and only use a shell wrapper when the requested operation genuinely requires shell syntax. If a required mutation is denied by host policy, state the exact blocked tool or policy instead of pretending the work was completed.
         """;
 }
 
@@ -382,11 +382,35 @@ public sealed class AgentRuntime(
                 };
                 if (!keep) removed++;
                 return keep;
+            }).Select(part =>
+            {
+                if (part is not ToolCallPart call || IsValidJsonObject(call.ArgumentsJson)) return part;
+                removed++;
+                return call with
+                {
+                    ArgumentsJson = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        _muagents_error = "Stored tool arguments were incomplete or invalid JSON. Retry the operation with smaller arguments."
+                    })
+                };
             }).ToArray();
             if (parts.Length > 0) normalized.Add(message with { Parts = parts });
         }
         removedCount = removed;
         return removed == 0 ? messages : normalized;
+    }
+
+    private static bool IsValidJsonObject(string json)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
     }
 
     private static string? BuildClientVisibleArguments(ToolInvocation call)
@@ -397,6 +421,9 @@ public sealed class AgentRuntime(
         {
             using var document = System.Text.Json.JsonDocument.Parse(call.ArgumentsJson);
             var root = document.RootElement;
+            if (root.TryGetProperty("_muagents_error", out var errorElement) &&
+                errorElement.ValueKind == System.Text.Json.JsonValueKind.String)
+                return System.Text.Json.JsonSerializer.Serialize(new { error = errorElement.GetString() });
             var path = root.TryGetProperty("path", out var pathElement) && pathElement.ValueKind == System.Text.Json.JsonValueKind.String
                 ? pathElement.GetString()
                 : null;

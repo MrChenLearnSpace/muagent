@@ -77,7 +77,7 @@ CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuA
 | --- | --- |
 | `MuAgents.OpenAI.csproj` | 模型协议适配项目及 HTTP/JSON 依赖。 |
 | `OpenAiCompatibleOptions.cs` | 协议枚举与模型连接选项，包括地址、端点、密钥、模型上限和能力开关。 |
-| `OpenAiCompatibleChatModel.cs` | 把统一消息转换为 Responses、Chat Completions 或 Messages 请求，并把 SSE/JSON 响应还原为统一模型事件；处理工具调用参数碎片和用量信息。 |
+| `OpenAiCompatibleChatModel.cs` | 把统一消息转换为 Responses、Chat Completions 或 Messages 请求，并把 SSE/JSON 响应还原为统一模型事件；聚合工具调用参数碎片，在落库前把截断或无效 JSON 转为安全恢复错误，同时处理用量信息。 |
 
 ## 7. 持久化 `src/MuAgents.Persistence`
 
