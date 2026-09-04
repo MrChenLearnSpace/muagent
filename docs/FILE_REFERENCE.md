@@ -42,7 +42,7 @@ CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuA
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.Cli.csproj` | 交互式命令行客户端项目定义。 |
-| `Program.cs` | 默认以无密码 `admin` 自动初始化/登录，`--setup-password` 时才首次设置密码，已有密码时按需提示；此外只负责 HTTP/NDJSON 展示、控制台逐次审批、文件上下文、MCP/Skill 管理和 `/compact` 等命令。不接受 `-d`，不初始化 APP 路径或创建 `.muagent`。 |
+| `Program.cs` | 默认以无密码 `admin` 自动初始化/登录，`--setup-password` 时才首次设置密码，已有密码时按需提示；自动续期访问令牌并恢复当前用户最近会话，此外负责 HTTP/NDJSON 展示、本地操作审批、文件上下文、MCP/Skill 管理和 `/compact` 等命令。不接受 `-d`，不初始化 APP 路径或创建 `.muagent`。 |
 | `FileReferenceSet.cs` | 管理 CLI 文件上下文：相对路径基于 CLI 当前终端目录，递归遍历时排除 `.muagent`、生成目录、敏感/二进制文件，执行文件数与字节上限并生成发送快照。 |
 | `SlashCommandLine.cs` | 斜杠命令目录和交互式行编辑器：统一生成帮助与 Tab 候选，支持唯一命令补全、共同前缀、候选列表、光标移动和输入历史；重定向输入时兼容普通 `ReadLine`。 |
 
@@ -68,7 +68,7 @@ CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuA
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.Core.csproj` | 核心智能体运行时项目定义。 |
-| `AgentRuntime.cs` | 智能体主循环：加载历史、构造上下文、调用模型、转发含调用参数的工具开始事件、并发执行工具、落库结果、限制迭代并记录遥测；也查询会话 Token 状态，并在独占锁内持久化自动/手动压缩结果。 |
+| `AgentRuntime.cs` | 智能体主循环：注入可信编码代理规则、加载历史、构造上下文、调用模型、转发工具事件、执行并落库工具结果、限制迭代且保证调用/结果成对；也查询会话 Token 状态，并在独占锁内持久化自动/手动压缩结果。 |
 | `ContextManagement.cs` | Token 近似估算、上下文预算规划和历史压缩；自动压缩保留系统消息及近期轮次，手动压缩把全部历史折叠并收紧到指定硬目标。 |
 
 ## 6. 模型适配 `src/MuAgents.OpenAI`
@@ -96,7 +96,8 @@ CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuA
 | `ToolGatewayOptions.cs` | 工具调用超时、并发数和最大结果字符数配置。 |
 | `ToolGateway.cs` | 按命名空间注册工具，校验调用参数，并以信号量限制并发；统一处理超时、异常、截断和遥测。 |
 | `BuiltInTools.cs` | 内置基础工具，例如 UTC 时间和受控文本处理，作为工具协议的最小可用实现。 |
-| `CommandExecutionTool.cs` | `local.execute_command` 控制台工具、`Denied`/`RequireApproval`/`Allowed` 三档策略及审批协调器；使用参数数组、项目内工作目录、命令白名单、独立审批/执行超时、输出限制和项目内临时环境。 |
+| `CommandExecutionTool.cs` | `local.execute_command` 控制台工具、`Denied`/`RequireApproval`/`Allowed` 三档策略及审批协调器；使用参数数组、项目内工作目录、命令白名单、独立审批/执行超时、输出限制和项目内可写环境，并拒绝在 Shell 参数中覆盖受保护的用户/缓存/临时目录变量。 |
+| `WorkspaceFileTools.cs` | `local.list_files` 与 `local.write_file`：列举项目结构、创建/覆盖 UTF-8 文件、自动创建父目录；复用本地操作三档审批，阻止 `.muagent`、项目外路径和符号链接逃逸。 |
 
 ## 9. 内容与 OCR
 
@@ -176,6 +177,7 @@ CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuA
 | `ToolGatewayTests.cs` | 验证工具参数、调用结果、精确调用 ID 传递、超时、并发和截断。 |
 | `EventEnvelopeTests.cs` | 验证 NDJSON 外壳和事件数据统一输出 camelCase，并验证审批客户端能收到工具参数。 |
 | `CommandExecutionToolTests.cs` | 验证控制台禁止、逐次批准/拒绝、自动允许和工作目录越界拒绝。 |
+| `WorkspaceFileToolTests.cs` | 验证项目文件真实写入与列举、禁止模式、项目越界及 `.muagent` 状态目录拒绝。 |
 | `FileReferenceSetTests.cs` | 验证目录递归引用、生成/敏感文件排除和按目录移除。 |
 | `DynamicConfigurationTests.cs` | 验证 MCP 与 Skill 添加、删除、启停、持久化、重新加载和默认目录去重。 |
 | `RuntimeLaunchArgumentsTests.cs` | 验证默认项目目录、相对 `-d`、密码修改参数、长参数形式、参数透传和不存在目录拒绝。 |

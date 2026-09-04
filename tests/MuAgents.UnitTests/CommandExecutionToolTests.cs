@@ -98,6 +98,26 @@ public sealed class CommandExecutionToolTests
         Assert.Contains("allowlist", result.Content, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("set HOME=C:\\Temp & dotnet build", "HOME")]
+    [InlineData("$env:TEMP = 'C:\\Temp'; dotnet build", "TEMP")]
+    [InlineData("export NUGET_PACKAGES=/tmp/packages; dotnet test", "NUGET_PACKAGES")]
+    public async Task ProtectedWritableEnvironment_CannotBeOverridden(string shellText, string variableName)
+    {
+        var tool = CreateTool(CommandApprovalMode.Allowed, out _);
+        using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            command = OperatingSystem.IsWindows() ? "cmd.exe" : "sh",
+            arguments = new[] { OperatingSystem.IsWindows() ? "/c" : "-c", shellText }
+        }));
+
+        var result = await tool.InvokeAsync(arguments.RootElement, Context("protected-env"));
+
+        Assert.True(result.IsError);
+        Assert.Contains(variableName, result.Content, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(".muagent", result.Content, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static CommandExecutionTool CreateTool(
         CommandApprovalMode mode,
         out CommandApprovalCoordinator approvals)

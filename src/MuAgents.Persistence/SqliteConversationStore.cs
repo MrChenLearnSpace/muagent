@@ -123,6 +123,42 @@ public sealed class SqliteConversationStore : IConversationStore
             ParseDate(reader.GetString(4)), ParseDate(reader.GetString(5)), reader.GetInt64(6));
     }
 
+    /// <summary>只列出当前租户内由指定用户创建的会话，最近更新的排在最前。</summary>
+    public async Task<IReadOnlyList<Conversation>> ListAsync(
+        string tenantId,
+        string createdByUserId,
+        int limit = 20,
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, tenant_id, created_by_user_id, title, created_at, updated_at, version
+            FROM conversations
+            WHERE tenant_id = $tenant AND created_by_user_id = $user
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$tenant", tenantId);
+        command.Parameters.AddWithValue("$user", createdByUserId);
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 100));
+        var conversations = new List<Conversation>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            conversations.Add(new Conversation(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                ParseDate(reader.GetString(4)),
+                ParseDate(reader.GetString(5)),
+                reader.GetInt64(6)));
+        }
+        return conversations;
+    }
+
     public async Task<IReadOnlyList<AgentMessage>> GetMessagesAsync(
         string tenantId,
         string conversationId,

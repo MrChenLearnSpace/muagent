@@ -44,7 +44,7 @@ flowchart LR
     subgraph CliProcess[MuAgents.Cli 进程：展示与输入]
         CliLine[斜杠补全与交互行编辑]
         CliFiles[FileReferenceSet<br/>读取 CLI 当前目录文件]
-        CliHttp[认证 HTTP/NDJSON 客户端]
+        CliHttp[认证 HTTP/NDJSON 客户端<br/>令牌自动续期 / 最近会话恢复]
         CliApproval[逐次命令审批提示]
         CliLine --> CliHttp
         CliLine --> CliFiles -->|文件内容作为不可信用户输入| CliHttp
@@ -65,6 +65,8 @@ flowchart LR
         subgraph ToolImplementations[模型可调用工具]
             Clock[local.current_time]
             FileTool[local.read_file / 内容读取]
+            ListTool[local.list_files / 项目结构]
+            WriteTool[local.write_file / UTF-8 文件落地]
             WebTool[web.search / web.fetch]
             McpTool[mcp.call]
             CommandTool[local.execute_command]
@@ -87,6 +89,8 @@ flowchart LR
         Runtime --> Gateway
         Gateway --> Clock
         Gateway --> FileTool --> Readers --> Ocr
+        Gateway --> ListTool
+        Gateway --> WriteTool --> Approval
         Gateway --> WebTool
         Gateway --> McpTool --> McpManager
         Gateway --> CommandTool
@@ -121,6 +125,9 @@ flowchart LR
     Runtime --> Database
     Auth --> Keys
     Readers --> ProjectFiles
+    ListTool --> ProjectFiles
+    WriteTool --> ProjectFiles
+    WriteTool --> RuntimeData
     Skills --> ProjectFiles
     McpManager --> RuntimeData
 ```
@@ -253,7 +260,7 @@ public sealed record AgentRequest(
 - `UsageUpdated`
 - `Warning` / `Error` / `Completed`
 
-每轮必须接受 `CancellationToken`。配置 `MaxToolIterations`，防止模型无限调用工具。
+每轮必须接受 `CancellationToken`。配置 `MaxToolIterations`（默认 24），防止模型无限调用工具。到达上限时必须先执行并持久化已经保存的工具调用结果，再结束本轮，禁止把没有对应 `ToolResultPart` 的悬空调用留给下一轮上下文。
 
 ## 7. 模型与协议兼容层
 
@@ -371,7 +378,7 @@ public interface IAgentTool
 - 异常转换为模型可理解但不泄露堆栈/密钥的结果。
 - 调用 ID、耗时、状态和结果摘要审计。
 
-当前模型工具包括 `local.current_time`、`local.read_file`、`local.execute_command`、`web.search`、`web.fetch` 和统一 MCP 入口 `mcp.call`。其中控制台工具实现三档策略：`Denied` 在启动进程前拒绝；`RequireApproval` 通过 `CommandApprovalCoordinator` 等待当前认证用户批准；`Allowed` 通过校验后自动执行。命令和参数始终分开传递，工作目录必须在 APP 项目根内，并使用 `.muagent/data/temp/commands` 下的一次性临时环境。
+当前模型工具包括 `local.current_time`、`local.list_files`、`local.read_file`、`local.write_file`、`local.execute_command`、`web.search`、`web.fetch` 和统一 MCP 入口 `mcp.call`。运行时始终加入可信编码代理指令：开发任务必须先检查项目、实际写入文件并在权限允许时执行验证，不能只在聊天中粘贴代码后声称完成。文件写入与控制台执行共用三档策略：`Denied` 在修改前拒绝；`RequireApproval` 通过 `CommandApprovalCoordinator` 等待当前认证用户批准；`Allowed` 通过校验后自动执行。文件工具拒绝 `.muagent`、项目外路径及符号链接逃逸；命令和参数始终分开传递，工作目录必须在 APP 项目根内。二者临时数据分别使用 `.muagent/data/temp/workspace-writes` 和 `.muagent/data/temp/commands`。
 
 ## 10. MCP 集成
 
@@ -493,7 +500,7 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 {
   "MuAgents": {
     "Agent": {
-      "MaxToolIterations": 12,
+      "MaxToolIterations": 24,
       "ToolTimeoutSeconds": 60
     },
     "Model": {

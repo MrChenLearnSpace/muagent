@@ -26,6 +26,13 @@ public interface IConversationStore
         string conversationId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>按最近更新时间列出指定用户在当前租户创建的会话，用于客户端恢复上下文。</summary>
+    Task<IReadOnlyList<Conversation>> ListAsync(
+        string tenantId,
+        string createdByUserId,
+        int limit = 20,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<AgentMessage>> GetMessagesAsync(
         string tenantId,
         string conversationId,

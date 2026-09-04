@@ -48,6 +48,13 @@ public static class RuntimePaths
             Directory.CreateDirectory(RootDirectory);
             Directory.SetCurrentDirectory(ProjectDirectory);
             var temporaryDirectory = EnsureDirectory(Path.Combine("data", "temp", "process"), "process temporary directory");
+            var portableHome = EnsureDirectory(Path.Combine("data", "home"), "portable user home directory");
+            var roamingAppData = EnsureDirectory(Path.Combine("data", "home", "AppData", "Roaming"), "portable roaming AppData directory");
+            var localAppData = EnsureDirectory(Path.Combine("data", "home", "AppData", "Local"), "portable local AppData directory");
+            var programData = EnsureDirectory(Path.Combine("data", "home", "ProgramData"), "portable ProgramData directory");
+            var xdgCache = EnsureDirectory(Path.Combine("data", "home", ".cache"), "portable XDG cache directory");
+            var xdgConfig = EnsureDirectory(Path.Combine("data", "home", ".config"), "portable XDG config directory");
+            var xdgData = EnsureDirectory(Path.Combine("data", "home", ".local", "share"), "portable XDG data directory");
             var dotnetHome = EnsureDirectory(Path.Combine("data", "dotnet", "home"), ".NET CLI home directory");
             var nugetPackages = EnsureDirectory(Path.Combine("data", "nuget", "packages"), "NuGet packages directory");
             var nugetCache = EnsureDirectory(Path.Combine("data", "nuget", "http-cache"), "NuGet HTTP cache directory");
@@ -56,6 +63,9 @@ public static class RuntimePaths
             SetPortableEnvironmentVariable("TEMP", temporaryDirectory);
             SetPortableEnvironmentVariable("TMP", temporaryDirectory);
             SetPortableEnvironmentVariable("TMPDIR", temporaryDirectory);
+            SetPortableHomeEnvironment(portableHome, roamingAppData, localAppData, xdgCache, xdgConfig, xdgData);
+            SetPortableEnvironmentVariable("PROGRAMDATA", programData);
+            SetPortableEnvironmentVariable("ALLUSERSPROFILE", programData);
             SetPortableEnvironmentVariable("DOTNET_CLI_HOME", dotnetHome);
             SetPortableEnvironmentVariable("NUGET_PACKAGES", nugetPackages);
             SetPortableEnvironmentVariable("NUGET_HTTP_CACHE_PATH", nugetCache);
@@ -75,6 +85,25 @@ public static class RuntimePaths
         startInfo.Environment["TEMP"] = normalizedTemporaryDirectory;
         startInfo.Environment["TMP"] = normalizedTemporaryDirectory;
         startInfo.Environment["TMPDIR"] = normalizedTemporaryDirectory;
+        var portableHome = EnsureDirectory(Path.Combine("data", "home"), "portable user home directory");
+        var roamingAppData = EnsureDirectory(Path.Combine("data", "home", "AppData", "Roaming"), "portable roaming AppData directory");
+        var localAppData = EnsureDirectory(Path.Combine("data", "home", "AppData", "Local"), "portable local AppData directory");
+        startInfo.Environment["HOME"] = portableHome;
+        startInfo.Environment["USERPROFILE"] = portableHome;
+        startInfo.Environment["APPDATA"] = roamingAppData;
+        startInfo.Environment["LOCALAPPDATA"] = localAppData;
+        var programData = EnsureDirectory(Path.Combine("data", "home", "ProgramData"), "portable ProgramData directory");
+        startInfo.Environment["PROGRAMDATA"] = programData;
+        startInfo.Environment["ALLUSERSPROFILE"] = programData;
+        startInfo.Environment["XDG_CACHE_HOME"] = EnsureDirectory(Path.Combine("data", "home", ".cache"), "portable XDG cache directory");
+        startInfo.Environment["XDG_CONFIG_HOME"] = EnsureDirectory(Path.Combine("data", "home", ".config"), "portable XDG config directory");
+        startInfo.Environment["XDG_DATA_HOME"] = EnsureDirectory(Path.Combine("data", "home", ".local", "share"), "portable XDG data directory");
+        if (OperatingSystem.IsWindows())
+        {
+            var homeRoot = Path.GetPathRoot(portableHome) ?? string.Empty;
+            startInfo.Environment["HOMEDRIVE"] = homeRoot.TrimEnd(Path.DirectorySeparatorChar);
+            startInfo.Environment["HOMEPATH"] = portableHome[homeRoot.Length..];
+        }
         startInfo.Environment["DOTNET_CLI_HOME"] = EnsureDirectory(Path.Combine("data", "dotnet", "home"), ".NET CLI home directory");
         startInfo.Environment["NUGET_PACKAGES"] = EnsureDirectory(Path.Combine("data", "nuget", "packages"), "NuGet packages directory");
         startInfo.Environment["NUGET_HTTP_CACHE_PATH"] = EnsureDirectory(Path.Combine("data", "nuget", "http-cache"), "NuGet HTTP cache directory");
@@ -131,6 +160,27 @@ public static class RuntimePaths
 
     private static void SetPortableEnvironmentVariable(string name, string value) =>
         Environment.SetEnvironmentVariable(name, value, EnvironmentVariableTarget.Process);
+
+    private static void SetPortableHomeEnvironment(
+        string portableHome,
+        string roamingAppData,
+        string localAppData,
+        string xdgCache,
+        string xdgConfig,
+        string xdgData)
+    {
+        SetPortableEnvironmentVariable("HOME", portableHome);
+        SetPortableEnvironmentVariable("USERPROFILE", portableHome);
+        SetPortableEnvironmentVariable("APPDATA", roamingAppData);
+        SetPortableEnvironmentVariable("LOCALAPPDATA", localAppData);
+        SetPortableEnvironmentVariable("XDG_CACHE_HOME", xdgCache);
+        SetPortableEnvironmentVariable("XDG_CONFIG_HOME", xdgConfig);
+        SetPortableEnvironmentVariable("XDG_DATA_HOME", xdgData);
+        if (!OperatingSystem.IsWindows()) return;
+        var root = Path.GetPathRoot(portableHome) ?? string.Empty;
+        SetPortableEnvironmentVariable("HOMEDRIVE", root.TrimEnd(Path.DirectorySeparatorChar));
+        SetPortableEnvironmentVariable("HOMEPATH", portableHome[root.Length..]);
+    }
 
     private static StringComparison PathComparison =>
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;

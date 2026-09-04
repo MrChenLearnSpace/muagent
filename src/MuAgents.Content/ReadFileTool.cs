@@ -40,6 +40,9 @@ public sealed class ReadFileTool(
             : _options.WorkspaceRoots.Select(root => Path.GetFullPath(root, RuntimePaths.ProjectDirectory));
         if (!roots.Any(root => IsWithin(fullPath, root)))
             throw new MuAgentException(MuAgentErrorCategory.SecurityDenied, "File path is outside configured workspace roots.");
+        // 模型无需读取运行时数据库、密钥或项目秘密；这些内容也不能因项目根是默认白名单而泄露。
+        if (IsWithin(fullPath, RuntimePaths.RootDirectory) || IsSensitiveFile(fullPath))
+            throw new MuAgentException(MuAgentErrorCategory.SecurityDenied, "Runtime state and sensitive files cannot be read by the model.");
         var document = await readers.ReadAsync(
             new ContentDescriptor(fullPath),
             new ReadOptions(MaxCharacters: _options.MaxCharacters, EnableOcr: _options.EnableOcr, MaxPages: _options.MaxPages),
@@ -65,5 +68,14 @@ public sealed class ReadFileTool(
     {
         var relative = Path.GetRelativePath(root, path);
         return relative != ".." && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) && !Path.IsPathRooted(relative);
+    }
+
+    private static bool IsSensitiveFile(string path)
+    {
+        var name = Path.GetFileName(path);
+        var extension = Path.GetExtension(path);
+        return name.Equals(".env", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals("muagents.settings.json", StringComparison.OrdinalIgnoreCase) ||
+               new[] { ".pem", ".key", ".pfx", ".p12" }.Contains(extension, StringComparer.OrdinalIgnoreCase);
     }
 }

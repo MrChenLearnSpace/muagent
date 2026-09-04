@@ -94,11 +94,13 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 ```
 
 目录引用会递归处理，并自动跳过 `.git`、`bin`、`obj`、`data`、`node_modules`、本地密钥文件、二进制及超限文件。
-MCP 与 Skill 的增删和启停会由 APP 立即持久化到 APP 项目根的 `.muagent/config/mcp.json` 与 `.muagent/config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。CLI 不接受 `-d`、不创建 `.muagent`；它的当前目录只作为 `/add` 本地文件引用的基准。
+MCP 与 Skill 的增删和启停会由 APP 立即持久化到 APP 项目根的 `.muagent/config/mcp.json` 与 `.muagent/config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。CLI 重启时默认恢复当前用户最近更新的会话，`/new` 才会创建新会话；访问令牌到期前会自动重新登录，因此不会因 CLI 长时间空闲而丢失当前上下文。CLI 不接受 `-d`、不创建 `.muagent`；它的当前目录只作为 `/add` 本地文件引用的基准。
 
 ## 控制台执行与三种审批模式
 
-模型可通过 `local.execute_command` 调用 APP 所在机器的控制台程序。默认采用逐次审批，CLI 会显示可执行文件、参数和工作目录，并要求当前用户明确输入 `y`：
+模型现在会收到固定的编码代理规则：当用户要求创建、修改、修复、编译或测试项目时，应先检查项目，再通过 `local.write_file` 实际写入文件，并用 `local.execute_command` 验证；只有用户明确只要示例时才仅在聊天中给代码。`local.list_files`、`local.read_file` 和 `local.write_file` 都以 APP 项目根为边界，写入工具禁止访问 `.muagent`、`.git` 和项目外路径。
+
+文件写入与控制台执行共用三档本地操作审批。默认采用逐次审批，CLI 会显示命令详情或文件路径、字符数和覆盖方式，并要求当前用户明确输入 `y`：
 
 ```json
 {
@@ -109,14 +111,19 @@ MCP 与 Skill 的增删和启停会由 APP 立即持久化到 APP 项目根的 `
       "ApprovalTimeoutSeconds": 120,
       "MaxExecutionSeconds": 120,
       "MaxOutputCharacters": 48000
+    },
+    "WorkspaceFiles": {
+      "Enabled": true,
+      "MaxWriteCharacters": 2000000,
+      "MaxListEntries": 2000
     }
   }
 }
 ```
 
-- `Denied`：完全禁止模型执行控制台命令。
-- `RequireApproval`：每次命令都向当前 CLI 用户询问，默认拒绝。
-- `Allowed`：模型可自动执行，建议只用于可信且隔离的开发环境。
+- `Denied`：禁止模型写文件和执行控制台命令。
+- `RequireApproval`：每次文件写入或命令执行都向当前 CLI 用户询问，默认拒绝。
+- `Allowed`：模型可自动写文件和执行命令，建议只用于可信且隔离的开发环境。
 
 `AllowedCommands` 为空表示不额外限制；也可填写 `dotnet`、`git`、`pwsh.exe` 等允许项。工作目录只能是 APP 项目根或其子目录，临时目录和运行时缓存仍固定在项目 `.muagent/data/`。修改审批配置后重启 APP 生效。
 
@@ -167,7 +174,7 @@ my-project/                       # APP 的 -d 项目目录或 APP 启动目录
 └─ ...                            # 项目源码和其他文件
 ```
 
-APP 的文件读取、图片、控制台工作目录和 Skill/MCP 相对路径以 APP 项目根解析；数据库、密钥、配置、临时目录和运行时缓存以 `.muagent/` 解析。所有 APP 管理的可写状态如果逃逸 `.muagent/` 都会被拒绝。`TEMP`、`TMP`、`DOTNET_CLI_HOME` 和 NuGet 等缓存变量也会重定向到 `.muagent/data/`。CLI 的 `/add .` 则以 CLI 当前终端目录为准，文件内容通过认证 API 上传，不让 APP 按客户端路径读取磁盘。
+APP 的文件读取、图片、控制台工作目录和 Skill/MCP 相对路径以 APP 项目根解析；数据库、密钥、配置、临时目录和运行时缓存以 `.muagent/` 解析。所有 APP 管理的可写状态如果逃逸 `.muagent/` 都会被拒绝。用户目录、应用数据、ProgramData、XDG、`TEMP`、`DOTNET_CLI_HOME` 和 NuGet 等可写环境变量均重定向到 `.muagent/data/`，命令参数不能覆盖这些保护。CLI 的 `/add .` 则以 CLI 当前终端目录为准，文件内容通过认证 API 上传，不让 APP 按客户端路径读取磁盘。
 
 ## 文档
 

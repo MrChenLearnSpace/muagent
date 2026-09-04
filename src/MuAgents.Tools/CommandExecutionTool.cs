@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using MuAgents.Abstractions;
 
@@ -83,6 +84,14 @@ public sealed class CommandExecutionTool(
     IOptions<CommandExecutionOptions> options,
     CommandApprovalCoordinator approvals) : IAgentTool, IManagesOwnToolTimeout
 {
+    private static readonly string[] ProtectedWritableEnvironmentVariables =
+    [
+        "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+        "PROGRAMDATA", "ALLUSERSPROFILE", "TEMP", "TMP", "TMPDIR", "DOTNET_CLI_HOME",
+        "NUGET_PACKAGES", "NUGET_HTTP_CACHE_PATH", "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+        "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"
+    ];
+
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
           "type": "object",
@@ -101,7 +110,7 @@ public sealed class CommandExecutionTool(
 
     public ToolDefinition Definition { get; } = new(
         "local.execute_command",
-        "Executes a console program in the MuAgents project directory. Pass the executable and each argument separately. Execution may be denied or require explicit user approval.",
+        "Executes a console program in the MuAgents project directory. Pass the executable and each argument separately. Writable environment paths are already isolated under the project's .muagent directory and must not be overridden. Execution may be denied or require explicit user approval.",
         Schema,
         IsMutating: true);
 
@@ -113,6 +122,8 @@ public sealed class CommandExecutionTool(
         if (_options.ApprovalMode == CommandApprovalMode.Denied)
             return Error("Console command execution is denied by host policy.");
         if (!TryReadRequest(arguments, out var request, out var validationError)) return Error(validationError!);
+        if (TryFindProtectedEnvironmentOverride(request!.Arguments, out var protectedName))
+            return Error($"Command arguments must not override protected environment variable '{protectedName}'. Writable paths are managed under the project .muagent directory.");
         if (!IsAllowedCommand(request!.Command))
             return Error($"Command '{request.Command}' is not in the host allowlist.");
         if (_options.ApprovalMode == CommandApprovalMode.RequireApproval)
@@ -269,6 +280,26 @@ public sealed class CommandExecutionTool(
                 : !commandContainsPath && allowed.Equals(command, PathComparison);
         });
 
+    private static bool TryFindProtectedEnvironmentOverride(
+        IReadOnlyList<string> arguments,
+        out string? variableName)
+    {
+        foreach (var argument in arguments)
+        {
+            foreach (var name in ProtectedWritableEnvironmentVariables)
+            {
+                // Covers common shell assignment forms such as HOME=..., set HOME=... and $env:HOME=....
+                var pattern = $@"(?ix)(?:^|[\s;&|])(?:set\s+|export\s+|\$env:)?{Regex.Escape(name)}\s*=";
+                if (!Regex.IsMatch(argument, pattern)) continue;
+                variableName = name;
+                return true;
+            }
+        }
+
+        variableName = null;
+        return false;
+    }
+
     private static bool IsWithinProject(string path)
     {
         var relative = Path.GetRelativePath(RuntimePaths.ProjectDirectory, path);
@@ -279,7 +310,16 @@ public sealed class CommandExecutionTool(
     private static void CopyRequiredEnvironment(ProcessStartInfo startInfo)
     {
         startInfo.Environment.Clear();
-        foreach (var name in new[] { "PATH", "SystemRoot", "WINDIR", "PATHEXT", "ComSpec", "LD_LIBRARY_PATH" })
+        // SDK 定位变量只用于读取已安装工具；可写的用户、缓存、临时和 ProgramData 路径随后由
+        // RuntimePaths.ConfigureChildProcess 覆盖到项目 .muagent，不能回落到系统盘。
+        foreach (var name in new[]
+                 {
+                     "PATH", "SystemRoot", "WINDIR", "PATHEXT", "ComSpec", "OS",
+                     "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS",
+                     "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles",
+                     "CommonProgramFiles(x86)", "CommonProgramW6432", "DOTNET_ROOT", "DOTNET_ROOT(x86)",
+                     "MSBuildSDKsPath", "LD_LIBRARY_PATH"
+                 })
         {
             var value = Environment.GetEnvironmentVariable(name);
             if (!string.IsNullOrWhiteSpace(value)) startInfo.Environment[name] = value;

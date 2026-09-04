@@ -29,7 +29,7 @@ public sealed class AgentRuntimeTests
             new FakeGateway(),
             store,
             new ContextManager(new ApproximateTokenEstimator(), contextOptions),
-            Options.Create(new AgentOptions()),
+            Options.Create(new AgentOptions { DefaultSystemInstruction = "test agent" }),
             contextOptions,
             NullLogger<AgentRuntime>.Instance);
 
@@ -72,6 +72,63 @@ public sealed class AgentRuntimeTests
         Assert.Contains(events, item => item is ToolCallCompletedEvent);
         Assert.Contains(events, item => item is TextDeltaEvent { Delta: "done" });
         Assert.Equal(4, (await store.GetMessagesAsync("tenant", conversation.Id)).Count);
+    }
+
+    [Fact]
+    public async Task RunAsync_AlwaysAddsCodingAgentInstruction()
+    {
+        var store = new MemoryConversationStore();
+        var conversation = await store.CreateAsync("tenant", "user", null);
+        AgentRequest? captured = null;
+        var model = new DelegateChatModel((request, _) =>
+        {
+            captured = request;
+            return DelegateChatModel.FromEvents([new ModelCompleted("stop")]);
+        });
+        var runtime = new AgentRuntime(
+            model,
+            new FakeGateway(),
+            store,
+            new ContextManager(new ApproximateTokenEstimator(), Options.Create(new ContextOptions())),
+            Options.Create(new AgentOptions()),
+            Options.Create(new ContextOptions()),
+            NullLogger<AgentRuntime>.Instance);
+
+        await foreach (var _ in runtime.RunAsync(new AgentRunRequest(
+                           "tenant", "user", conversation.Id, "Create a game", new ModelParameters("test")))) { }
+
+        Assert.NotNull(captured);
+        Assert.Contains("local.write_file", captured.Parameters.SystemInstruction);
+        Assert.Contains("Do not merely paste proposed code", captured.Parameters.SystemInstruction);
+    }
+
+    [Fact]
+    public async Task RunAsync_ToolIterationLimit_DoesNotPersistDanglingToolCall()
+    {
+        var store = new MemoryConversationStore();
+        var conversation = await store.CreateAsync("tenant", "user", null);
+        var model = new DelegateChatModel((_, _) => DelegateChatModel.FromEvents(
+            [new ModelToolCall("last-call", "test.tool", "{}"), new ModelCompleted("tool_calls")]));
+        var runtime = new AgentRuntime(
+            model,
+            new FakeGateway(),
+            store,
+            new ContextManager(new ApproximateTokenEstimator(), Options.Create(new ContextOptions())),
+            Options.Create(new AgentOptions { MaxToolIterations = 1 }),
+            Options.Create(new ContextOptions()),
+            NullLogger<AgentRuntime>.Instance);
+
+        var events = new List<AgentEvent>();
+        await foreach (var item in runtime.RunAsync(new AgentRunRequest(
+                           "tenant", "user", conversation.Id, "do work", new ModelParameters("test"))))
+            events.Add(item);
+
+        var history = await store.GetMessagesAsync("tenant", conversation.Id);
+        Assert.Contains(history.SelectMany(message => message.Parts),
+            part => part is ToolCallPart { CallId: "last-call" });
+        Assert.Contains(history.SelectMany(message => message.Parts),
+            part => part is ToolResultPart { CallId: "last-call" });
+        Assert.Contains(events, item => item is CompletedEvent { FinishReason: "max_tool_iterations" });
     }
 
     private static async IAsyncEnumerable<ModelEvent> Complete(
@@ -123,6 +180,17 @@ public sealed class AgentRuntimeTests
         }
         public Task<Conversation?> GetAsync(string tenantId, string conversationId, CancellationToken cancellationToken = default) =>
             Task.FromResult(_items.TryGetValue((tenantId, conversationId), out var item) ? item.Conversation : null);
+        public Task<IReadOnlyList<Conversation>> ListAsync(
+            string tenantId,
+            string createdByUserId,
+            int limit = 20,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Conversation>>(_items.Values
+                .Select(item => item.Conversation)
+                .Where(item => item.TenantId == tenantId && item.CreatedByUserId == createdByUserId)
+                .OrderByDescending(item => item.UpdatedAt)
+                .Take(limit)
+                .ToArray());
         public Task<IReadOnlyList<AgentMessage>> GetMessagesAsync(string tenantId, string conversationId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<AgentMessage>>(_items[(tenantId, conversationId)].Messages.ToArray());
         public Task AppendMessageAsync(string tenantId, string conversationId, AgentMessage message, CancellationToken cancellationToken = default)

@@ -399,6 +399,20 @@ api.MapPut("/tenants/{tenantId}/members", async Task<IResult> (
     }
 });
 
+api.MapGet("/conversations", async (
+    HttpContext http,
+    int? limit,
+    IConversationStore store,
+    CancellationToken cancellationToken) =>
+{
+    var identity = RequestIdentity.From(http);
+    return Results.Ok(await store.ListAsync(
+        identity.TenantId,
+        identity.UserId,
+        Math.Clamp(limit ?? 20, 1, 100),
+        cancellationToken));
+});
+
 api.MapPost("/conversations", async (
     HttpContext http,
     CreateConversationRequest request,

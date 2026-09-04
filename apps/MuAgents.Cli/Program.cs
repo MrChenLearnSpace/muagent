@@ -65,18 +65,43 @@ client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
     "Bearer", loginDocument.RootElement.GetProperty("accessToken").GetString());
 var loggedInUser = loginDocument.RootElement.GetProperty("user").GetProperty("userName").GetString() ?? options.UserName;
 var loggedInTenant = loginDocument.RootElement.GetProperty("tenant").GetProperty("tenantName").GetString() ?? "unknown";
+var accessTokenExpiresAt = loginDocument.RootElement.GetProperty("expiresAt").GetDateTimeOffset();
 if (password.Length == 0)
     Console.WriteLine($"认证模式：{loggedInUser} 当前未设置密码，仅建议在绑定 127.0.0.1 的可信本机使用。");
 var commandApprovalMode = await GetCommandApprovalModeAsync(client);
 
-var conversationId = await CreateConversationAsync(client, "CLI conversation");
-Console.WriteLine($"MuAgents 会话 {conversationId}。输入 /help 查看命令。");
+var conversationSelection = await GetOrCreateConversationAsync(client);
+var conversationId = conversationSelection.Id;
+Console.WriteLine(conversationSelection.Resumed
+    ? $"已恢复最近会话 {conversationId}，历史上下文会继续发送给模型。输入 /new 可创建新会话。"
+    : $"已创建 MuAgents 会话 {conversationId}。输入 /help 查看命令。");
 
 while (true)
 {
     var input = SlashCommandLine.ReadLine("you> ");
     if (input is null) break;
     if (string.IsNullOrWhiteSpace(input)) continue;
+    // CLI 可以长时间保持打开；令牌即将过期时在发送任何 API 请求前重新登录，避免丢失当前会话。
+    if (DateTimeOffset.UtcNow >= accessTokenExpiresAt.AddMinutes(-1))
+    {
+        var refreshed = await PostLoginAsync(client, options, password);
+        if (refreshed.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            refreshed.Dispose();
+            Console.Write($"Password for {options.UserName}: ");
+            password = ReadPassword();
+            refreshed = await PostLoginAsync(client, options, password);
+        }
+        using (refreshed)
+        {
+            refreshed.EnsureSuccessStatusCode();
+            using var refreshedDocument = JsonDocument.Parse(await refreshed.Content.ReadAsStringAsync());
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", refreshedDocument.RootElement.GetProperty("accessToken").GetString());
+            accessTokenExpiresAt = refreshedDocument.RootElement.GetProperty("expiresAt").GetDateTimeOffset();
+        }
+        Console.WriteLine("登录令牌已自动续期，当前会话保持不变。");
+    }
     if (input.StartsWith('/'))
     {
         var separator = input.IndexOf(' ');
@@ -219,18 +244,20 @@ while (true)
             if (type == "text_delta" && TryGetString(data, "delta", out var delta)) Console.Write(delta);
             if (type == "tool_call_started" &&
                 TryGetString(data, "name", out var toolName) &&
-                toolName == "local.execute_command" &&
+                toolName is "local.execute_command" or "local.write_file" &&
                 TryGetString(data, "callId", out var callId) &&
                 TryGetString(data, "argumentsJson", out var argumentsJson))
             {
                 Console.WriteLine();
-                Console.WriteLine($"控制台命令请求：{FormatCommand(argumentsJson!)}");
+                Console.WriteLine(toolName == "local.execute_command"
+                    ? $"控制台命令请求：{FormatCommand(argumentsJson!)}"
+                    : $"项目文件写入请求：{FormatFileWrite(argumentsJson!)}");
                 if (commandApprovalMode.Equals("RequireApproval", StringComparison.OrdinalIgnoreCase))
                     await HandleCommandApprovalAsync(client, conversationId, callId!);
                 else
                     Console.WriteLine(commandApprovalMode.Equals("Allowed", StringComparison.OrdinalIgnoreCase)
-                        ? "审批模式为 Allowed，APP 将自动执行。"
-                        : "审批模式为 Denied，APP 将拒绝执行。");
+                        ? "审批模式为 Allowed，APP 将自动执行本地操作。"
+                        : "审批模式为 Denied，APP 将拒绝本地操作。");
                 Console.Write("agent> ");
             }
             if (type == "warning" && TryGetString(data, "message", out var warning)) Console.Error.WriteLine($"\nwarning: {warning}");
@@ -260,6 +287,20 @@ static async Task<string> CreateConversationAsync(HttpClient client, string titl
     response.EnsureSuccessStatusCode();
     using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
     return document.RootElement.GetProperty("id").GetString()!;
+}
+
+/// <summary>默认恢复当前用户最近更新的会话；没有历史时才创建，避免 CLI 重启后丢失上下文。</summary>
+static async Task<(string Id, bool Resumed)> GetOrCreateConversationAsync(HttpClient client)
+{
+    using var response = await client.GetAsync("api/v1/conversations?limit=1");
+    response.EnsureSuccessStatusCode();
+    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+    if (document.RootElement.ValueKind == JsonValueKind.Array && document.RootElement.GetArrayLength() > 0)
+    {
+        var id = document.RootElement[0].GetProperty("id").GetString();
+        if (!string.IsNullOrWhiteSpace(id)) return (id, true);
+    }
+    return (await CreateConversationAsync(client, "CLI conversation"), false);
 }
 
 static async Task PrintModelAsync(HttpClient client)
@@ -349,6 +390,26 @@ static string FormatCommand(string argumentsJson)
     catch (JsonException)
     {
         return argumentsJson;
+    }
+}
+
+/// <summary>文件正文不会进入审批显示，只呈现服务端生成的路径、长度和覆盖标记。</summary>
+static string FormatFileWrite(string argumentsJson)
+{
+    try
+    {
+        using var document = JsonDocument.Parse(argumentsJson);
+        var root = document.RootElement;
+        var path = TryGetString(root, "path", out var configuredPath) ? configuredPath : "<未指定>";
+        var characters = root.TryGetProperty("characters", out var charactersElement) && charactersElement.TryGetInt32(out var count)
+            ? count
+            : 0;
+        var overwrite = root.TryGetProperty("overwrite", out var overwriteElement) && overwriteElement.ValueKind == JsonValueKind.True;
+        return $"{path}（{characters} 字符，{(overwrite ? "允许覆盖" : "仅新建")}）";
+    }
+    catch (JsonException)
+    {
+        return "<参数无法解析>";
     }
 }
 

@@ -26,8 +26,11 @@ public static class ServiceCollectionExtensions
         // 核心上限在宿主启动时校验，避免错误配置等到长任务执行中途才暴露。
         services.AddOptions<AgentOptions>()
             .Bind(section.GetSection("Agent"))
-            .Validate(options => options.MaxToolIterations is >= 0 and <= 100,
-                "MaxToolIterations must be between 0 and 100.")
+            .Validate(options => options.MaxToolIterations is >= 1 and <= 100,
+                "MaxToolIterations must be between 1 and 100.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.DefaultSystemInstruction) &&
+                                 options.DefaultSystemInstruction.Length <= 20_000,
+                "DefaultSystemInstruction must contain 1-20000 characters.")
             .ValidateOnStart();
         services.AddOptions<ContextOptions>()
             .Bind(section.GetSection("Context"))
@@ -57,6 +60,13 @@ public static class ServiceCollectionExtensions
             .Validate(options => options.AllowedCommands.All(command =>
                     !string.IsNullOrWhiteSpace(command) && command.Length <= 1_024),
                 "Allowed command entries must contain 1-1024 characters.")
+            .ValidateOnStart();
+        services.AddOptions<WorkspaceFileOptions>()
+            .Bind(section.GetSection("WorkspaceFiles"))
+            .Validate(options => options.MaxWriteCharacters is >= 1 and <= 10_000_000,
+                "Workspace file write limit must be between 1 and 10000000 characters.")
+            .Validate(options => options.MaxListEntries is >= 1 and <= 20_000,
+                "Workspace file list limit must be between 1 and 20000 entries.")
             .ValidateOnStart();
         services.AddOptions<OpenAiCompatibleOptions>()
             .Bind(section.GetSection("Model"))
@@ -90,6 +100,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentTool, CurrentTimeTool>();
         services.AddSingleton<CommandApprovalCoordinator>();
         services.AddSingleton<IAgentTool, CommandExecutionTool>();
+        services.AddSingleton<IAgentTool, ListWorkspaceFilesTool>();
+        services.AddSingleton<IAgentTool, WriteWorkspaceFileTool>();
         services.AddSingleton<IToolGateway, ToolGateway>();
         services.AddSingleton<IConversationStore, SqliteConversationStore>();
         services.AddSingleton<IIdentityStore, SqliteIdentityStore>();

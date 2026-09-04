@@ -61,4 +61,30 @@ public sealed class SqliteConversationStoreTests
             }
         }
     }
+
+    [Fact]
+    public async Task ListAsync_ReturnsOnlyCurrentUsersMostRecentConversations()
+    {
+        var database = TestPaths.NewFile(".db");
+        try
+        {
+            var store = new SqliteConversationStore(Options.Create(
+                new PersistenceOptions { ConnectionString = $"Data Source={database};Pooling=False" }));
+            var older = await store.CreateAsync("tenant", "user", "older");
+            var otherUser = await store.CreateAsync("tenant", "other-user", "other");
+            var newer = await store.CreateAsync("tenant", "user", "newer");
+            await store.AppendMessageAsync("tenant", older.Id, AgentMessage.Text(AgentRole.User, "updated last"));
+
+            var listed = await store.ListAsync("tenant", "user", 1);
+
+            var resumed = Assert.Single(listed);
+            Assert.Equal(older.Id, resumed.Id);
+            Assert.DoesNotContain(listed, item => item.Id == otherUser.Id || item.Id == newer.Id);
+        }
+        finally
+        {
+            foreach (var path in new[] { database, database + "-wal", database + "-shm" })
+                if (File.Exists(path)) File.Delete(path);
+        }
+    }
 }

@@ -91,13 +91,16 @@ API 应用按以下顺序加载 JSON 配置：
 常用配置位于 `appsettings.json`：
 
 - `MuAgents:Persistence:ConnectionString`：默认 `Data Source=data/muagents.db`；实际保存为 `.muagent/data/muagents.db`。
-- `MuAgents:Agent:MaxToolIterations`：单轮最多工具迭代次数，默认 12。
+- `MuAgents:Agent:MaxToolIterations`：单轮最多工具迭代次数，默认 24。达到上限时会先完成并保存最后一批工具结果，避免留下破坏后续上下文的悬空调用。
 - `MuAgents:Agent:ToolTimeoutSeconds`：一次工具调用超时，默认 60 秒。
 - `MuAgents:Agent:MaxConcurrency`：同一批工具调用并发数，默认 4。
 - `MuAgents:CommandExecution:ApprovalMode`：控制台执行审批模式，默认 `RequireApproval`。
 - `MuAgents:CommandExecution:AllowedCommands`：可执行程序白名单；空数组表示不额外限制。
 - `MuAgents:CommandExecution:ApprovalTimeoutSeconds`：等待用户审批的最长时间，默认 120 秒。
 - `MuAgents:CommandExecution:MaxExecutionSeconds`：单次控制台进程最长时间，默认 120 秒。
+- `MuAgents:WorkspaceFiles:Enabled`：是否向模型提供项目文件列举和写入工具，默认启用。
+- `MuAgents:WorkspaceFiles:MaxWriteCharacters`：单次文件写入字符上限，默认 2,000,000。
+- `MuAgents:WorkspaceFiles:MaxListEntries`：单次项目目录列举条目上限，默认 2,000。
 - `MuAgents:Context:MaxContextTokens`：上下文窗口上限。
 - `MuAgents:Context:ReservedOutputTokens`：为模型输出预留的 Token 数。
 - `MuAgents:Context:RecentTurnsToKeep`：压缩时强制保留的最近轮次数。
@@ -158,6 +161,10 @@ APP 启动入口会在创建宿主之前重定向以下环境变量；CLI 不修
 | 环境变量 | 项目内位置 |
 | --- | --- |
 | `TEMP`、`TMP`、`TMPDIR` | `.muagent/data/temp/process/`；具体外部任务使用独立子目录。 |
+| `HOME`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH` | `.muagent/data/home/` 及其对应项目内路径。 |
+| `APPDATA`、`LOCALAPPDATA` | `.muagent/data/home/AppData/` 下的项目内目录。 |
+| `PROGRAMDATA`、`ALLUSERSPROFILE` | `.muagent/data/home/ProgramData/`。 |
+| `XDG_CACHE_HOME`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME` | `.muagent/data/home/` 下的 `.cache`、`.config`、`.local/share`。 |
 | `DOTNET_CLI_HOME` | `.muagent/data/dotnet/home/` |
 | `NUGET_PACKAGES` | `.muagent/data/nuget/packages/` |
 | `NUGET_HTTP_CACHE_PATH` | `.muagent/data/nuget/http-cache/` |
@@ -233,7 +240,7 @@ dotnet run --project apps/MuAgents.Cli -- `
   --url http://localhost:5000/ --setup-password
 ```
 
-设置密码后，常规启动命令不变，CLI 会先尝试无密码登录，收到拒绝后才提示输入密码。多租户用户额外传 `--tenant <tenant-id>`。CLI 每次启动会新建会话；普通文本直接发送给模型，以 `/` 开头的内容由 CLI 解释为本地命令。
+设置密码后，常规启动命令不变，CLI 会先尝试无密码登录，收到拒绝后才提示输入密码。多租户用户额外传 `--tenant <tenant-id>`。CLI 启动时默认恢复当前用户在该租户最近更新的会话，只有没有历史或使用 `/new` 时才创建新会话；访问令牌到期前会自动重新登录并保持同一个会话 ID。普通文本直接发送给模型，以 `/` 开头的内容由 CLI 解释为本地命令。
 
 交互终端支持与 Codex/Claude Code 类似的斜杠命令补全：输入 `/` 后按 `Tab` 显示所有候选；输入命令前缀后按 `Tab`，唯一候选会自动补齐，多个候选会先扩展共同前缀、再次按 `Tab` 显示候选清单。上下方向键可浏览本次运行的输入历史。输入被管道重定向时自动退回普通逐行读取。
 
@@ -245,7 +252,7 @@ dotnet run --project apps/MuAgents.Cli -- `
 | `/model` | 从 API 查询当前模型名、协议、完整端点、上下文/输出上限、图片/工具能力和密钥是否已配置；不会显示密钥值。 |
 | `/status` | 显示 API、用户、租户、会话、CLI 文件工作目录、APP 项目根、APP `.muagent` 状态目录、控制台审批模式、服务端已加载配置文件、引用统计，以及当前/最大上下文 Token。 |
 | `/compact` | 手动持久化压缩当前会话；压缩后不超过最大上下文的 1/3。若原本已低于目标则不改写。 |
-| `/new [标题]` | 新建会话，当前文件引用继续保留。 |
+| `/new [标题]` | 显式新建会话，当前文件引用继续保留；下次启动默认恢复最近更新的会话。 |
 | `/add [文件或目录]` | 添加单文件或递归添加目录；省略路径等同 `/add .`。包含空格的路径可用双引号包围。 |
 | `/context`、`/files` | 列出当前引用文件和 UTF-8 字节数。 |
 | `/remove <文件或目录>` | 移除一个文件，或移除目录下的全部引用。 |
@@ -270,9 +277,31 @@ MCP 与 Skill 配置修改命令要求当前登录用户是系统管理员。普
 
 这里的当前值按模型请求相同的估算器计算，包含已持久化会话消息和工具定义；它是预算估算值，不是模型供应商最终账单值。
 
-### 5.2 控制台执行和审批
+### 5.2 编码代理、文件写入和控制台审批
 
-APP 向模型注册 `local.execute_command` 工具。模型必须分别提交可执行文件、参数数组、可选项目内工作目录和超时，不会由 APP 隐式拼接 Shell 字符串。例如模型可请求：
+APP 会向每次模型请求加入可信的编码代理规则。用户要求“写一个程序”“修改代码”“修复并测试”时，模型应使用工具完成实际工作，而不是只把建议代码发送到终端：
+
+1. 使用 `local.list_files` 查看项目结构。
+2. 使用 `local.read_file` 阅读相关文件。
+3. 使用 `local.write_file` 创建或覆盖完整 UTF-8 文本文件，父目录会自动创建。
+4. 使用 `local.execute_command` 编译、测试或运行验证。
+5. 工具成功后才输出简短完成说明；如果策略拒绝写入或执行，必须明确报告阻止它的工具和策略。
+
+`local.write_file` 只能写 APP 项目根内文件，禁止写 `.muagent` 状态、`.git` 元数据和项目外路径，也拒绝经过符号链接或目录联接逃逸。文件先写入 `.muagent/data/temp/workspace-writes/`，成功后再原子移动到目标位置。配置如下：
+
+```json
+{
+  "MuAgents": {
+    "WorkspaceFiles": {
+      "Enabled": true,
+      "MaxWriteCharacters": 2000000,
+      "MaxListEntries": 2000
+    }
+  }
+}
+```
+
+`local.execute_command` 要求模型分别提交可执行文件、参数数组、可选项目内工作目录和超时，不会由 APP 隐式拼接 Shell 字符串。例如模型可请求：
 
 ```json
 {
@@ -303,15 +332,15 @@ APP 向模型注册 `local.execute_command` 工具。模型必须分别提交可
 
 | 模式 | 行为 | 建议场景 |
 | --- | --- | --- |
-| `Denied` | 工具保留可解释的拒绝结果，但绝不启动进程。 | 生产、只读问答或不允许本地执行的服务。 |
-| `RequireApproval` | 每次工具调用通过 NDJSON 返回调用 ID、命令和参数；CLI 显示详情并要求当前用户输入 `y`，其他输入均拒绝。 | 默认开发模式。 |
-| `Allowed` | 通过参数、目录和白名单校验后自动启动，不等待客户端。 | 可信、单用户且已有外部沙箱的环境。 |
+| `Denied` | 文件写入返回拒绝结果，控制台绝不启动进程；读取工具仍可用。 | 生产、只读问答或不允许本地修改的服务。 |
+| `RequireApproval` | 每次文件写入或控制台调用通过 NDJSON 返回调用 ID 和安全摘要；CLI 显示详情并要求当前用户输入 `y`，其他输入均拒绝。 | 默认开发模式。 |
+| `Allowed` | 文件和命令通过路径、容量、参数及白名单校验后自动执行，不等待客户端。 | 可信、单用户且已有外部沙箱的环境。 |
 
 审批决定绑定到“租户 + 用户 + 会话 + 工具调用 ID”，不能用一个批准释放其他用户或其他调用。等待审批超过 `ApprovalTimeoutSeconds` 会自动失败。`AllowedCommands` 为空表示允许任意可执行程序入口；非空时只接受列出的文件名或精确路径。命令工作目录必须位于 APP 项目根内。修改本节配置后需要重启 APP。
 
-控制台进程由 APP 启动，工作目录是项目根或其子目录。`TEMP`、`TMP`、`.NET CLI` 和 NuGet 缓存继续重定向到项目 `.muagent/data/`；标准输入关闭，标准输出/错误受字符上限约束，超时会终止整个进程树。命令本身拥有运行 APP 的操作系统账户权限，因此 `Allowed` 并不等同于沙箱，处理不可信项目时应使用容器或低权限账户。
+控制台进程由 APP 启动，工作目录是项目根或其子目录。用户目录、应用数据、ProgramData、XDG、`TEMP`、`.NET CLI` 和 NuGet 缓存均重定向到项目 `.muagent/data/`；模型不能在 Shell 参数中覆盖这些受保护变量。标准输入关闭，标准输出/错误受字符上限约束，超时会终止整个进程树。命令本身拥有运行 APP 的操作系统账户权限，因此 `Allowed` 并不等同于沙箱，处理不可信项目时应使用容器或低权限账户。
 
-自定义客户端在 `RequireApproval` 模式下应监听 `tool_call_started` 事件中的 `callId`、`name` 和 `argumentsJson`。确认后调用：
+自定义客户端在 `RequireApproval` 模式下应监听 `tool_call_started` 事件中的 `callId`、`name` 和 `argumentsJson`。控制台事件包含命令参数；文件写入事件只包含路径、字符数和覆盖标记，不传输文件正文。确认后调用：
 
 ```http
 POST /api/v1/command-approvals/{conversationId}/{callId}
@@ -341,6 +370,8 @@ Content-Type: application/json
 跳过原因会显示在终端。文件由 CLI 读取后作为不可信的 User 消息内容上传，API 不会根据客户端路径直接读取服务器磁盘。引用大量文件仍会占用模型上下文；如果超过模型预算，请缩小目录或分批引用。
 
 ## 6. 会话 API
+
+`GET /api/v1/conversations?limit=20` 按更新时间倒序返回当前认证用户在当前租户创建的会话。CLI 使用 `limit=1` 恢复最近会话，因此进程重启后仍会把原有消息和工具结果作为上下文发送给模型。
 
 ### 6.1 创建会话
 
@@ -377,7 +408,7 @@ curl.exe -N -X POST "http://localhost:5000/api/v1/conversations/$id/messages" `
 | `references` | array/null | 文本文件引用，每项包含 `path` 和 `content`；服务端再次执行数量和长度限制。 |
 
 事件 `type` 可能是：`text_delta`、`reasoning_delta`、`tool_call_started`、`tool_call_completed`、`compaction_started`、`compaction_completed`、`usage_updated`、`warning`、`completed` 或 `error`。客户端必须逐行解析，不能把整个响应当成一个 JSON 对象。
-`tool_call_started` 始终包含 `callId` 和工具 `name`；当工具是 `local.execute_command` 时还包含 `argumentsJson`，用于客户端在执行前展示并审批具体命令。其他工具不会在开始事件中公开参数。
+`tool_call_started` 始终包含 `callId` 和工具 `name`；`local.execute_command` 的 `argumentsJson` 用于展示具体命令，`local.write_file` 的该字段是去掉正文后的审批摘要。其他工具不会在开始事件中公开参数。
 
 ### 6.3 查询历史
 

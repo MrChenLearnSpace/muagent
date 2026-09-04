@@ -11,7 +11,15 @@ namespace MuAgents.Core;
 /// <summary>控制单轮智能体允许的最大模型—工具往返次数。</summary>
 public sealed class AgentOptions
 {
-    public int MaxToolIterations { get; set; } = 12;
+    public int MaxToolIterations { get; set; } = 24;
+    /// <summary>
+    /// 所有会话都会收到的可信代理规则。调用方的自定义 SystemInstruction 会附加在其后，
+    /// 不能意外移除“编码任务必须实际落地”的默认行为。
+    /// </summary>
+    public string DefaultSystemInstruction { get; set; } = """
+        You are MuAgent, an agent that works directly in the current project.
+        When the user asks you to create, modify, fix, build, or test software, use the available tools to perform the work in the project. First inspect relevant files with local.list_files and local.read_file, write complete file contents with local.write_file, and validate the result with local.execute_command when execution is permitted. Do not merely paste proposed code into chat when the user asked for a working project. Continue through tool results, correct failures when possible, and only give the final concise summary after the requested files and validation are complete. Never claim that a file was created or changed unless a successful tool result confirms it. All writable environment and temporary paths are already isolated under the project's .muagent directory: never override those environment variables or create/write paths outside the project. Invoke executables directly and only use a shell wrapper when the requested operation genuinely requires shell syntax. If a required mutation is denied by host policy, state the exact blocked tool or policy instead of pretending the work was completed.
+        """;
 }
 
 /// <summary>启动一轮智能体运行所需的可信身份、会话、用户输入和模型参数。</summary>
@@ -73,6 +81,7 @@ public sealed class AgentRuntime(
         {
             throw new ArgumentException("Message text or an image is required.", nameof(request));
         }
+        var parameters = WithDefaultInstruction(request.Parameters);
 
         var startedAt = Stopwatch.GetTimestamp();
         var modelTag = new KeyValuePair<string, object?>("model", request.Parameters.Model);
@@ -107,13 +116,13 @@ public sealed class AgentRuntime(
                 cancellationToken).ConfigureAwait(false);
 
             // 每次工具结果落库后重新读取历史，使下一次模型调用看到完整且权威的消息顺序。
-            for (var iteration = 0; iteration <= _options.MaxToolIterations; iteration++)
+            for (var iteration = 0; iteration < _options.MaxToolIterations; iteration++)
             {
                 var history = await conversations.GetMessagesAsync(
                     request.TenantId,
                     request.ConversationId,
                     cancellationToken).ConfigureAwait(false);
-                var plan = contextManager.Prepare(history, tools.Definitions, request.Parameters);
+                var plan = contextManager.Prepare(history, tools.Definitions, parameters);
                 if (plan.WasCompacted)
                 {
                     // 自动压缩后的检查点必须落库，否则下一轮仍会重复携带并压缩同一批旧消息。
@@ -140,7 +149,7 @@ public sealed class AgentRuntime(
                 var finishReason = default(string);
                 var usage = default(ModelUsage);
                 await foreach (var modelEvent in model.CompleteAsync(
-                                   new AgentRequest(plan.Messages, tools.Definitions, request.Parameters),
+                                   new AgentRequest(plan.Messages, tools.Definitions, parameters),
                                    cancellationToken).ConfigureAwait(false))
                 {
                     switch (modelEvent)
@@ -185,7 +194,7 @@ public sealed class AgentRuntime(
                             AgentRole.Assistant,
                             parts,
                             DateTimeOffset.UtcNow,
-                            usage is null ? null : new MessageMetadata(request.Parameters.Model, usage.InputTokens, usage.OutputTokens)),
+                            usage is null ? null : new MessageMetadata(parameters.Model, usage.InputTokens, usage.OutputTokens)),
                         cancellationToken).ConfigureAwait(false);
                 }
 
@@ -197,21 +206,13 @@ public sealed class AgentRuntime(
                     yield break;
                 }
 
-                if (iteration == _options.MaxToolIterations)
-                {
-                    yield return new WarningEvent("Maximum tool iterations reached.");
-                    runCompleted = true;
-                    yield return new CompletedEvent("max_tool_iterations");
-                    yield break;
-                }
-
                 foreach (var call in calls)
                 {
-                    // 只有控制台工具公开参数，供审批客户端展示；其他工具参数可能含敏感业务数据。
+                    // 控制台参数可以直接展示；文件写入只公开去除正文后的摘要，避免大段源码进入审批事件。
                     yield return new ToolCallStartedEvent(
                         call.CallId,
                         call.Name,
-                        call.Name == "local.execute_command" ? call.ArgumentsJson : null);
+                        BuildClientVisibleArguments(call));
                 }
 
                 // 网关内部负责并发上限与超时；这里按返回顺序逐条落库并发出完成事件。
@@ -235,6 +236,16 @@ public sealed class AgentRuntime(
                         result.Name,
                         result.Result.IsError,
                         (long)result.Duration.TotalMilliseconds);
+                }
+
+                // 已持久化的每个工具调用都必须拥有对应结果。只有结果全部落库后才能在轮次上限处停止，
+                // 否则下一轮会话会携带悬空调用，部分兼容模型会忽略后续用户消息或直接返回空响应。
+                if (iteration == _options.MaxToolIterations - 1)
+                {
+                    yield return new WarningEvent("Maximum tool iterations reached after completing the pending tool calls.");
+                    runCompleted = true;
+                    yield return new CompletedEvent("max_tool_iterations");
+                    yield break;
                 }
             }
         }
@@ -269,7 +280,7 @@ public sealed class AgentRuntime(
             throw new KeyNotFoundException("Conversation was not found in this tenant.");
         var history = await conversations.GetMessagesAsync(tenantId, conversationId, cancellationToken).ConfigureAwait(false);
         return new AgentContextStatus(
-            contextManager.Estimate(history, tools.Definitions, parameters),
+            contextManager.Estimate(history, tools.Definitions, WithDefaultInstruction(parameters)),
             _contextOptions.MaxContextTokens,
             Math.Max(1, _contextOptions.MaxContextTokens / 3));
     }
@@ -290,7 +301,8 @@ public sealed class AgentRuntime(
                 throw new KeyNotFoundException("Conversation was not found in this tenant.");
             var history = await conversations.GetMessagesAsync(tenantId, conversationId, cancellationToken).ConfigureAwait(false);
             var target = Math.Max(1, _contextOptions.MaxContextTokens / 3);
-            var plan = contextManager.CompactToTarget(history, tools.Definitions, parameters, target);
+            var plan = contextManager.CompactToTarget(
+                history, tools.Definitions, WithDefaultInstruction(parameters), target);
             if (plan.WasCompacted)
             {
                 await conversations.ReplaceMessagesAsync(
@@ -305,6 +317,39 @@ public sealed class AgentRuntime(
         finally
         {
             gate.Release();
+        }
+    }
+
+    private ModelParameters WithDefaultInstruction(ModelParameters parameters) => parameters with
+    {
+        SystemInstruction = string.Join("\n\n", new[]
+        {
+            _options.DefaultSystemInstruction,
+            parameters.SystemInstruction
+        }.Where(value => !string.IsNullOrWhiteSpace(value)))
+    };
+
+    private static string? BuildClientVisibleArguments(ToolInvocation call)
+    {
+        if (call.Name == "local.execute_command") return call.ArgumentsJson;
+        if (call.Name != "local.write_file") return null;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(call.ArgumentsJson);
+            var root = document.RootElement;
+            var path = root.TryGetProperty("path", out var pathElement) && pathElement.ValueKind == System.Text.Json.JsonValueKind.String
+                ? pathElement.GetString()
+                : null;
+            var characters = root.TryGetProperty("content", out var contentElement) && contentElement.ValueKind == System.Text.Json.JsonValueKind.String
+                ? contentElement.GetString()?.Length ?? 0
+                : 0;
+            var overwrite = !root.TryGetProperty("overwrite", out var overwriteElement) ||
+                            overwriteElement.ValueKind == System.Text.Json.JsonValueKind.True;
+            return System.Text.Json.JsonSerializer.Serialize(new { path, characters, overwrite });
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "{}";
         }
     }
 }
