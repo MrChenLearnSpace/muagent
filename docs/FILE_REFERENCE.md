@@ -44,7 +44,8 @@ CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuA
 | `MuAgents.Cli.csproj` | 交互式命令行客户端项目定义。 |
 | `Program.cs` | 默认以无密码 `admin` 自动初始化/登录，`--setup-password` 时才首次设置密码，已有密码时按需提示；自动续期访问令牌并恢复当前用户最近会话，此外负责 HTTP/NDJSON 展示、本地操作审批、文件上下文、MCP/Skill 管理和 `/compact` 等命令。不接受 `-d`，不初始化 APP 路径或创建 `.muagent`。 |
 | `FileReferenceSet.cs` | 管理 CLI 文件上下文：相对路径基于 CLI 当前终端目录，递归遍历时排除 `.muagent`、生成目录、敏感/二进制文件，执行文件数与字节上限并生成发送快照。 |
-| `SlashCommandLine.cs` | 斜杠命令目录和交互式行编辑器：统一生成帮助与 Tab 候选，支持唯一命令补全、共同前缀、候选列表、光标移动和输入历史；重定向输入时兼容普通 `ReadLine`。 |
+| `SlashCommandLine.cs` | 斜杠命令目录和交互式多行编辑器：统一生成帮助与 Tab 候选，支持唯一命令补全、共同前缀、候选列表、光标移动、`Enter` 换行、`Shift+Enter` 提交和上下方向键输入历史；重定向输入时兼容普通 `ReadLine`。 |
+| `TerminalPresentation.cs` | CLI ANSI 主题和轻量 Markdown 渲染器：区分用户、Agent 与工具颜色，渲染常用块级/行内语法，支持 `NO_COLOR` 和重定向纯文本，并过滤不可信控制字符。 |
 
 ## 4. 公共抽象 `src/MuAgents.Abstractions`
 
@@ -182,6 +183,7 @@ CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuA
 | `DynamicConfigurationTests.cs` | 验证 MCP 与 Skill 添加、删除、启停、持久化、重新加载和默认目录去重。 |
 | `RuntimeLaunchArgumentsTests.cs` | 验证默认项目目录、相对 `-d`、密码修改参数、长参数形式、参数透传和不存在目录拒绝。 |
 | `CliOptionsTests.cs` | 验证 CLI 默认无密码 `admin` 配置、`--setup-password` 和旧 `--bootstrap` 兼容别名。 |
+| `CliTerminalPresentationTests.cs` | 验证只有 `Shift+Enter` 提交，以及 Markdown 的纯文本/ANSI 标题、列表、引用、代码块和标记清理。 |
 | `SlashCommandCompletionTests.cs` | 验证斜杠命令的唯一前缀补全、多候选返回，以及带参数或普通文本不被误改。 |
 | `TestPaths.cs` | 在测试项目的 `.muagent/data/tests` 下创建独立临时目录，确保测试状态遵守项目隔离。 |
 

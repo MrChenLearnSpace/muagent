@@ -44,7 +44,7 @@ flowchart LR
     subgraph CliProcess[MuAgents.Cli 进程：展示与输入]
         CliLine[斜杠补全与交互行编辑]
         CliFiles[FileReferenceSet<br/>读取 CLI 当前目录文件]
-        CliHttp[认证 HTTP/NDJSON 客户端<br/>令牌自动续期 / 最近会话恢复]
+        CliHttp[认证 HTTP/NDJSON 客户端<br/>多行编辑 / 历史指令 / Markdown 渲染<br/>令牌自动续期 / 最近会话恢复]
         CliApproval[逐次命令审批提示]
         CliLine --> CliHttp
         CliLine --> CliFiles -->|文件内容作为不可信用户输入| CliHttp

@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 
 // CLI 只负责认证和呈现流；会话、工具和模型状态始终由 API 服务维护。
@@ -75,10 +76,11 @@ var conversationId = conversationSelection.Id;
 Console.WriteLine(conversationSelection.Resumed
     ? $"已恢复最近会话 {conversationId}，历史上下文会继续发送给模型。输入 /new 可创建新会话。"
     : $"已创建 MuAgents 会话 {conversationId}。输入 /help 查看命令。");
+TerminalTheme.WriteHint("输入支持多行：Enter 换行，Shift+Enter 发送，↑/↓ 查看历史指令。\n");
 
 while (true)
 {
-    var input = SlashCommandLine.ReadLine("you> ");
+    var input = SlashCommandLine.ReadLine("YOU › ");
     if (input is null) break;
     if (string.IsNullOrWhiteSpace(input)) continue;
     // CLI 可以长时间保持打开；令牌即将过期时在发送任何 API 请求前重新登录，避免丢失当前会话。
@@ -225,7 +227,7 @@ while (true)
     response.EnsureSuccessStatusCode();
     await using var stream = await response.Content.ReadAsStreamAsync();
     using var reader = new StreamReader(stream);
-    Console.Write("agent> ");
+    var assistantMarkdown = new StringBuilder();
     // 服务端使用 NDJSON：每行独立解析，不能等待整个响应结束后再反序列化。
     while (await reader.ReadLineAsync() is { } line)
     {
@@ -241,24 +243,24 @@ while (true)
             }
 
             var type = typeElement.GetString();
-            if (type == "text_delta" && TryGetString(data, "delta", out var delta)) Console.Write(delta);
+            if (type == "text_delta" && TryGetString(data, "delta", out var delta)) assistantMarkdown.Append(delta);
             if (type == "tool_call_started" &&
                 TryGetString(data, "name", out var toolName) &&
                 toolName is "local.execute_command" or "local.write_file" &&
                 TryGetString(data, "callId", out var callId) &&
                 TryGetString(data, "argumentsJson", out var argumentsJson))
             {
-                Console.WriteLine();
-                Console.WriteLine(toolName == "local.execute_command"
+                FlushAssistantMarkdown(assistantMarkdown);
+                TerminalTheme.WriteTool(toolName == "local.execute_command"
                     ? $"控制台命令请求：{FormatCommand(argumentsJson!)}"
                     : $"项目文件写入请求：{FormatFileWrite(argumentsJson!)}");
+                Console.WriteLine();
                 if (commandApprovalMode.Equals("RequireApproval", StringComparison.OrdinalIgnoreCase))
                     await HandleCommandApprovalAsync(client, conversationId, callId!);
                 else
                     Console.WriteLine(commandApprovalMode.Equals("Allowed", StringComparison.OrdinalIgnoreCase)
                         ? "审批模式为 Allowed，APP 将自动执行本地操作。"
                         : "审批模式为 Denied，APP 将拒绝本地操作。");
-                Console.Write("agent> ");
             }
             if (type == "warning" && TryGetString(data, "message", out var warning)) Console.Error.WriteLine($"\nwarning: {warning}");
             if (type == "error" && TryGetString(data, "message", out var error)) Console.Error.WriteLine($"\nerror: {error}");
@@ -268,8 +270,16 @@ while (true)
             Console.Error.WriteLine("\nwarning: Server returned malformed JSON in the response stream.");
         }
     }
-    Console.WriteLine();
+    FlushAssistantMarkdown(assistantMarkdown);
     await PrintContextStatusAsync(client, conversationId);
+}
+
+static void FlushAssistantMarkdown(StringBuilder markdown)
+{
+    if (markdown.Length == 0) return;
+    TerminalTheme.WriteAgentPrompt();
+    TerminalMarkdownRenderer.Write(markdown.ToString());
+    markdown.Clear();
 }
 
 static Task<HttpResponseMessage> PostLoginAsync(HttpClient client, CliOptions options, string password) =>

@@ -72,37 +72,48 @@ public sealed record SlashCompletion(string Text, IReadOnlyList<SlashCommandDefi
 /// 提供轻量的交互行编辑：斜杠命令 Tab 补全、候选展示、左右移动及历史记录。
 /// 标准输入被重定向时退回 ReadLine，确保管道和自动化脚本仍可使用。
 /// </summary>
-internal static class SlashCommandLine
+public static class SlashCommandLine
 {
     private static readonly List<string> History = [];
 
     public static string? ReadLine(string prompt)
     {
-        Console.Write(prompt);
+        TerminalTheme.WriteUserPrompt(prompt);
         if (Console.IsInputRedirected) return Console.ReadLine();
 
         var buffer = new StringBuilder();
         var cursor = 0;
-        var renderedLength = 0;
         var historyIndex = History.Count;
+        var renderTop = Console.CursorTop;
+        var renderedBottom = renderTop;
 
         while (true)
         {
             var key = Console.ReadKey(intercept: true);
-            if (key.Key == ConsoleKey.Enter)
+            if (IsSubmitKey(key))
             {
+                MoveToRenderedBottom(renderedBottom);
                 Console.WriteLine();
                 var value = buffer.ToString();
                 if (!string.IsNullOrWhiteSpace(value) && (History.Count == 0 || History[^1] != value)) History.Add(value);
                 return value;
             }
+            if (key.Key == ConsoleKey.Enter)
+            {
+                buffer.Insert(cursor, '\n');
+                cursor++;
+                Render(prompt, buffer, cursor, ref renderTop, ref renderedBottom);
+                continue;
+            }
             if (key.Key == ConsoleKey.C && key.Modifiers.HasFlag(ConsoleModifiers.Control))
             {
+                MoveToRenderedBottom(renderedBottom);
                 Console.WriteLine();
                 return null;
             }
             if (key.Key == ConsoleKey.D && key.Modifiers.HasFlag(ConsoleModifiers.Control) && buffer.Length == 0)
             {
+                MoveToRenderedBottom(renderedBottom);
                 Console.WriteLine();
                 return null;
             }
@@ -154,11 +165,12 @@ internal static class SlashCommandLine
                         ReplaceBuffer(buffer, completion.Text, ref cursor);
                         if (completion.Candidates.Count > 1 && completion.Text.Equals(original, StringComparison.Ordinal))
                         {
-                            ClearRenderedLine(prompt, renderedLength);
+                            MoveToRenderedBottom(renderedBottom);
                             Console.WriteLine();
                             foreach (var candidate in completion.Candidates)
                                 Console.WriteLine($"  {candidate.Usage,-28} {candidate.Description}");
-                            renderedLength = 0;
+                            renderTop = Console.CursorTop;
+                            renderedBottom = renderTop;
                         }
                     }
                     break;
@@ -171,7 +183,7 @@ internal static class SlashCommandLine
                     break;
             }
 
-            Render(prompt, buffer, cursor, ref renderedLength);
+            Render(prompt, buffer, cursor, ref renderTop, ref renderedBottom);
         }
     }
 
@@ -182,22 +194,47 @@ internal static class SlashCommandLine
         cursor = buffer.Length;
     }
 
-    private static void ClearRenderedLine(string prompt, int renderedLength)
+    private static void MoveToRenderedBottom(int renderedBottom)
     {
-        Console.Write('\r');
-        Console.Write(new string(' ', prompt.Length + renderedLength));
-        Console.Write('\r');
+        var bottom = Math.Clamp(renderedBottom, 0, Console.BufferHeight - 1);
+        Console.SetCursorPosition(0, bottom);
     }
 
-    private static void Render(string prompt, StringBuilder buffer, int cursor, ref int renderedLength)
+    private static void Render(
+        string prompt,
+        StringBuilder buffer,
+        int cursor,
+        ref int renderTop,
+        ref int renderedBottom)
     {
-        Console.Write('\r');
-        Console.Write(prompt);
-        Console.Write(buffer);
-        if (renderedLength > buffer.Length) Console.Write(new string(' ', renderedLength - buffer.Length));
-        Console.Write('\r');
-        Console.Write(prompt);
-        if (cursor > 0) Console.Write(buffer.ToString(0, cursor));
-        renderedLength = buffer.Length;
+        var width = Math.Max(2, Console.BufferWidth);
+        for (var row = renderTop; row <= renderedBottom && row < Console.BufferHeight; row++)
+        {
+            Console.SetCursorPosition(0, row);
+            Console.Write(new string(' ', width - 1));
+        }
+
+        Console.SetCursorPosition(0, renderTop);
+        TerminalTheme.WriteUserPrompt(prompt);
+        TerminalTheme.WriteUserInput(FormatMultiline(buffer.ToString(0, cursor), prompt.Length));
+        var cursorLeft = Console.CursorLeft;
+        var cursorTop = Console.CursorTop;
+        TerminalTheme.WriteUserInput(FormatMultiline(buffer.ToString(cursor, buffer.Length - cursor), prompt.Length));
+        renderedBottom = Math.Max(cursorTop, Console.CursorTop);
+        if (renderedBottom >= Console.BufferHeight)
+        {
+            var shift = renderedBottom - Console.BufferHeight + 1;
+            renderTop = Math.Max(0, renderTop - shift);
+            renderedBottom = Console.BufferHeight - 1;
+            cursorTop = Math.Max(0, cursorTop - shift);
+        }
+        Console.SetCursorPosition(cursorLeft, cursorTop);
     }
+
+    private static string FormatMultiline(string value, int promptLength) =>
+        value.Replace("\n", Environment.NewLine + new string(' ', promptLength), StringComparison.Ordinal);
+
+    public static bool IsSubmitKey(ConsoleKeyInfo key) =>
+        key.Key == ConsoleKey.Enter && key.Modifiers.HasFlag(ConsoleModifiers.Shift);
+
 }
