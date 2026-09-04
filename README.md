@@ -9,7 +9,7 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 - 支持文本、Markdown、PDF、图片和 OCR 内容读取。
 - 支持本地工具、Web 搜索/抓取、MCP 服务及目录式 Skill。
 - CLI 支持文件引用、MCP/Skill 动态管理、上下文状态和手动压缩等斜杠命令。
-- 启动命令所在目录就是当前项目根目录；每个项目的配置、会话和缓存独立保存在自己的 `.muagent/` 中。
+- 默认以启动命令所在目录作为项目根，也可用 `-d <项目路径>` 显式指定；每个项目的配置、会话和缓存独立保存在自己的 `.muagent/` 中。
 - 暴露 `ActivitySource` 和 `Meter`，可接入 OpenTelemetry。
 
 ## 环境要求
@@ -23,10 +23,11 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 1. 在准备使用 MuAgents 的项目根目录创建项目配置：
 
    ```powershell
-   Set-Location D:\work\my-project
-   New-Item -ItemType Directory -Force .muagent/config
-   Copy-Item apps/MuAgents.App/muagents.settings.json `
-     .muagent/config/muagents.settings.json
+   $muagentsSource = "F:\path\to\muagents"
+   $projectPath = "D:\work\my-project"
+   New-Item -ItemType Directory -Force "$projectPath\.muagent\config"
+   Copy-Item "$muagentsSource\apps\MuAgents.App\muagents.settings.json" `
+     "$projectPath\.muagent\config\muagents.settings.json"
    ```
 
    如果直接首次启动 API，也会自动复制这份模板；填写配置后重新启动即可。
@@ -52,16 +53,17 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 
    `BaseUrl` 必须包含 `http://` 或 `https://`。模型服务若不是 `/v1/responses` 路由，请相应调整 `BaseUrl`、`Endpoint` 和 `Protocol`。
 
-3. 保持终端位于项目根目录并启动 API：
+3. 保持终端位于项目根目录并启动 API；也可在任意目录通过 `-d` 指向项目：
 
    ```powershell
-   dotnet run --project apps/MuAgents.App
+   dotnet run --project "$muagentsSource\apps\MuAgents.App" -- -d $projectPath
    ```
 
 4. 首次运行时，在另一个终端启动 CLI 并初始化管理员：
 
    ```powershell
-   dotnet run --project apps/MuAgents.Cli -- `
+   dotnet run --project "$muagentsSource\apps\MuAgents.Cli" -- `
+     -d $projectPath `
      --url http://localhost:5000/ `
      --user admin `
      --bootstrap `
@@ -70,7 +72,7 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 
    按提示输入密码。密码长度必须满足配置中的 `MinimumPasswordLength`，默认至少 12 个字符。以后启动 CLI 时去掉 `--bootstrap`。
 
-进入 CLI 后可直接使用：
+进入 CLI 后，输入 `/` 再按 `Tab` 会列出命令，输入唯一前缀（例如 `/mcp_d`）再按 `Tab` 会补全命令。也可直接使用：
 
 ```text
 /help                  查看所有命令
@@ -91,9 +93,28 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 目录引用会递归处理，并自动跳过 `.git`、`bin`、`obj`、`data`、`node_modules`、本地密钥文件、二进制及超限文件。
 MCP 与 Skill 的增删和启停会立即持久化到当前项目的 `.muagent/config/mcp.json` 与 `.muagent/config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。
 
+## 发布与二进制启动
+
+下面生成依赖目标机器 .NET 8 Runtime 的可执行文件：
+
+```powershell
+dotnet publish apps/MuAgents.App -c Release -r win-x64 --self-contained false -o publish/app
+dotnet publish apps/MuAgents.Cli -c Release -r win-x64 --self-contained false -o publish/cli
+```
+
+发布完成后无需 `dotnet run`，可从任何目录直接运行 `.exe`。API 与 CLI 的 `-d` 应指向同一个项目：
+
+```powershell
+.\publish\app\MuAgents.App.exe -d D:\work\my-project --urls http://127.0.0.1:5000
+.\publish\cli\MuAgents.Cli.exe -d D:\work\my-project `
+  --url http://127.0.0.1:5000/ --user admin --bootstrap --tenant-name Local
+```
+
+Linux 发布时把运行时标识改成 `linux-x64`，二进制入口分别为 `MuAgents.App` 和 `MuAgents.Cli`。目标机器没有 .NET Runtime 时，将 `--self-contained false` 改为 `--self-contained true`。未指定 `-d` 时，程序使用当前终端目录；路径包含空格时请加引号。API 启动输出会列出项目根、状态目录以及本次实际加载的每个配置文件。
+
 ## 可移植目录约束
 
-MuAgents 在进程最开始记录启动目录，并把它作为项目根目录。程序二进制可以安装在其他位置，但所有可写状态只进入当前项目的 `.muagent/`：
+MuAgents 在进程最开始解析 `-d`，未提供时记录启动目录，并把结果作为项目根目录。程序二进制可以安装在其他位置，但所有可写状态只进入当前项目的 `.muagent/`：
 
 ```text
 my-project/                       # 启动 API/CLI 时所在目录

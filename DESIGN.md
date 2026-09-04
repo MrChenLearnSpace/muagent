@@ -403,7 +403,7 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 }
 ```
 
-启动命令所在目录是项目根目录，项目运行状态统一保存到 `<项目>/.muagent/`。上述相对数据库路径实际解析为 `.muagent/data/muagents.db`；MCP、Skill 和模型配置分别位于 `.muagent/config/`，因此多个项目不会共享会话、身份或扩展状态。
+启动时先解析通用的 `-d <项目路径>`/`--directory <项目路径>` 参数；未提供时以终端当前目录作为项目根。项目运行状态统一保存到 `<项目>/.muagent/`。上述相对数据库路径实际解析为 `.muagent/data/muagents.db`；MCP、Skill 和模型配置分别位于 `.muagent/config/`，因此多个项目不会共享会话、身份或扩展状态。API 启动日志和认证后的 `/api/v1/runtime` 会报告实际项目根、状态根及参与合并的配置文件，方便确认进程没有误用安装目录。
 
 配置优先级为：代码默认值 < 安装目录 `appsettings.json`/模板 < 项目 `.muagent/config/appsettings.json` < 项目 `.muagent/config/muagents.settings.json` < 环境变量 < 启动参数 < 会话级覆盖。对每项配置启动时进行范围校验。
 

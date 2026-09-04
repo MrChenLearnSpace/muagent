@@ -18,10 +18,15 @@ using MuAgents.OpenAI;
 using MuAgents.Mcp;
 using MuAgents.Skills;
 
-// 启动命令所在目录是项目根；所有运行状态和可写配置进入该项目的 .muagent。
-RuntimePaths.InitializeProcessEnvironment();
+// -d 可显式指定项目根；未指定时使用启动终端当前目录。通用参数先被移除，避免宿主重复解释。
+var launchArguments = RuntimeLaunchArguments.Parse(args);
+RuntimePaths.InitializeProcessEnvironment(launchArguments.ProjectDirectory);
+args = launchArguments.RemainingArguments;
 var packagedSettingsPath = Path.Combine(RuntimePaths.ApplicationDirectory, "muagents.settings.json");
 var projectConfigurationDirectory = RuntimePaths.ResolveWritePath("config", "project configuration directory");
+var projectAppSettingsPath = RuntimePaths.ResolveWritePath(
+    Path.Combine("config", "appsettings.json"),
+    "project appsettings path");
 var projectSettingsPath = RuntimePaths.ResolveWritePath(
     Path.Combine("config", "muagents.settings.json"),
     "project MuAgents settings path");
@@ -40,16 +45,34 @@ builder.Logging.AddConsole();
 // appsettings.json 是随程序发布的默认值；项目级覆盖和秘密只存在当前项目的 .muagent/config。
 builder.Configuration
     .AddJsonFile(packagedSettingsPath, optional: false, reloadOnChange: false)
-    .AddJsonFile(
-        RuntimePaths.ResolveWritePath(
-            Path.Combine("config", "appsettings.json"),
-            "project appsettings path"),
-        optional: true,
-        reloadOnChange: true)
+    .AddJsonFile(projectAppSettingsPath, optional: true, reloadOnChange: true)
     .AddJsonFile(projectSettingsPath, optional: false, reloadOnChange: true)
     // 保持 ASP.NET Core 约定：环境变量和启动参数仍可覆盖项目文件。
     .AddEnvironmentVariables()
     .AddCommandLine(args);
+
+// 记录确实存在且参与本次配置合并的文件；既方便启动排错，也供已认证 CLI 的 /status 查询。
+var loadedConfigurationFiles = new List<string>();
+AddLoadedConfiguration(Path.Combine(RuntimePaths.ApplicationDirectory, "appsettings.json"));
+AddLoadedConfiguration(Path.Combine(
+    RuntimePaths.ApplicationDirectory,
+    $"appsettings.{builder.Environment.EnvironmentName}.json"));
+AddLoadedConfiguration(packagedSettingsPath);
+AddLoadedConfiguration(projectAppSettingsPath);
+AddLoadedConfiguration(projectSettingsPath);
+
+Console.WriteLine($"MuAgents 项目根目录：{RuntimePaths.ProjectDirectory}");
+Console.WriteLine($"MuAgents 状态目录：{RuntimePaths.RootDirectory}");
+Console.WriteLine("本次加载的配置文件：");
+foreach (var configurationFile in loadedConfigurationFiles) Console.WriteLine($"  {configurationFile}");
+
+void AddLoadedConfiguration(string path)
+{
+    var fullPath = Path.GetFullPath(path);
+    if (File.Exists(fullPath) && !loadedConfigurationFiles.Contains(fullPath, StringComparer.OrdinalIgnoreCase))
+        loadedConfigurationFiles.Add(fullPath);
+}
+
 builder.Services.AddMuAgents(builder.Configuration);
 builder.Services.AddProblemDetails();
 var authenticationSection = builder.Configuration.GetSection("MuAgents:Authentication");
@@ -249,6 +272,12 @@ api.MapGet("/model", (IOptions<OpenAiCompatibleOptions> options) =>
         apiKeyConfigured = !string.IsNullOrWhiteSpace(model.ApiKey)
     });
 });
+api.MapGet("/runtime", () => Results.Ok(new
+{
+    projectDirectory = RuntimePaths.ProjectDirectory,
+    stateDirectory = RuntimePaths.RootDirectory,
+    configurationFiles = loadedConfigurationFiles
+}));
 api.MapGet("/auth/tenants", async (
     HttpContext http,
     IIdentityStore store,

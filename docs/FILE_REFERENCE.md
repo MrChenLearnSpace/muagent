@@ -38,7 +38,7 @@ MuAgents.App / MuAgents.Cli
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.App.csproj` | ASP.NET Core API 项目定义及对各功能模块的引用。 |
-| `Program.cs` | API 主入口：把启动目录识别为项目根，创建并加载 `.muagent/config` 项目配置，注册认证/授权/限流、初始化数据库并映射全部 `/api/v1` 路由；提供模型状态、上下文压缩、MCP/Skill 动态管理及 NDJSON 流。 |
+| `Program.cs` | API 主入口：解析 `-d` 或使用启动目录作为项目根，创建并加载 `.muagent/config` 项目配置，打印配置清单，注册认证/授权/限流、初始化数据库并映射全部 `/api/v1` 路由；提供运行目录、模型状态、上下文压缩、MCP/Skill 动态管理及 NDJSON 流。 |
 | `Authentication.cs` | 本地认证服务：密码哈希校验、JWT 签发、首次管理员初始化、用户/租户/成员管理；也定义认证配置和登录会话模型。 |
 | `appsettings.json` | 非敏感运行默认值，包括智能体限制、上下文预算、SQLite、内容处理、OCR、Skill、Web、MCP 和日志。 |
 | `muagents.settings.json` | 随程序发布的模型、Web 搜索和认证模板；每个项目首次启动时复制到 `.muagent/config/muagents.settings.json`。 |
@@ -48,8 +48,9 @@ MuAgents.App / MuAgents.Cli
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.Cli.csproj` | 交互式命令行客户端项目定义。 |
-| `Program.cs` | 首先把启动目录固定为项目根、把可写缓存放入 `.muagent`，之后登录并分派文件上下文、MCP/Skill 管理和 `/compact` 等命令；状态中显示项目根与状态目录。 |
+| `Program.cs` | 首先解析 `-d` 并固定项目根、把可写缓存放入 `.muagent`，之后登录并分派文件上下文、MCP/Skill 管理和 `/compact` 等命令；`/status` 同时显示客户端与服务端的目录和已加载配置。 |
 | `FileReferenceSet.cs` | 管理 CLI 文件上下文：相对路径基于项目根，递归遍历时排除 `.muagent`、生成目录、敏感/二进制文件，执行文件数与字节上限并生成发送快照。 |
+| `SlashCommandLine.cs` | 斜杠命令目录和交互式行编辑器：统一生成帮助与 Tab 候选，支持唯一命令补全、共同前缀、候选列表、光标移动和输入历史；重定向输入时兼容普通 `ReadLine`。 |
 
 ## 4. 公共抽象 `src/MuAgents.Abstractions`
 
@@ -65,6 +66,7 @@ MuAgents.App / MuAgents.Cli
 | `Skills.cs` | Skill 清单、脚本执行策略、目录接口、脚本请求和执行结果。 |
 | `Web.cs` | Web 搜索结果、搜索接口、网页内容和安全抓取接口。 |
 | `RuntimePaths.cs` | 项目隔离路径边界：记录程序安装目录和启动项目目录，把状态根固定为 `<项目>/.muagent`，规范化并验证写路径，并为 API、CLI 和子进程重定向 .NET/NuGet/临时缓存。 |
+| `RuntimeLaunchArguments.cs` | API/CLI 共用启动参数解析：处理 `-d`、`--directory` 及等号形式，相对路径基于启动终端解析，并从剩余应用参数中移除目录选项。 |
 | `Telemetry.cs` | 全局 `ActivitySource` 与 `Meter` 名称和实例，供运行时与宿主统一采集。 |
 
 ## 5. 核心运行时 `src/MuAgents.Core`
@@ -180,6 +182,8 @@ MuAgents.App / MuAgents.Cli
 | `EventEnvelopeTests.cs` | 验证 NDJSON 外壳和事件数据统一输出 camelCase，避免 CLI 因字段大小写失配而丢失流内容。 |
 | `FileReferenceSetTests.cs` | 验证目录递归引用、生成/敏感文件排除和按目录移除。 |
 | `DynamicConfigurationTests.cs` | 验证 MCP 与 Skill 添加、删除、启停、持久化、重新加载和默认目录去重。 |
+| `RuntimeLaunchArgumentsTests.cs` | 验证默认项目目录、相对 `-d`、长参数形式、参数透传和不存在目录拒绝。 |
+| `SlashCommandCompletionTests.cs` | 验证斜杠命令的唯一前缀补全、多候选返回，以及带参数或普通文本不被误改。 |
 | `TestPaths.cs` | 在测试项目的 `.muagent/data/tests` 下创建独立临时目录，确保测试状态遵守项目隔离。 |
 
 ## 15. 运行时生成内容

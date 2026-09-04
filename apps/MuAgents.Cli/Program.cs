@@ -4,11 +4,15 @@ using System.Text.Json;
 using MuAgents.Abstractions;
 
 // CLI 只负责认证和呈现流；会话、工具和模型状态始终由 API 服务维护。
-// 与 API 使用同一条项目隔离规则：启动目录是项目根，运行状态进入该目录的 .muagent。
-RuntimePaths.InitializeProcessEnvironment();
+// -d 可显式选择项目根；未指定时使用启动终端当前目录。
+var launchArguments = RuntimeLaunchArguments.Parse(args);
+RuntimePaths.InitializeProcessEnvironment(launchArguments.ProjectDirectory);
+args = launchArguments.RemainingArguments;
 var options = CliOptions.Parse(args);
 var references = new FileReferenceSet(RuntimePaths.ProjectDirectory);
 using var client = new HttpClient { BaseAddress = new Uri(options.Url) };
+Console.WriteLine($"CLI 项目根目录：{RuntimePaths.ProjectDirectory}");
+Console.WriteLine($"CLI 状态目录：{RuntimePaths.RootDirectory}");
 Console.Write($"Password for {options.UserName}: ");
 var password = ReadPassword();
 // --bootstrap 仅用于空身份库。已初始化返回 Conflict 时继续登录，方便同一命令重复执行。
@@ -42,8 +46,7 @@ Console.WriteLine($"MuAgents 会话 {conversationId}。输入 /help 查看命令
 
 while (true)
 {
-    Console.Write("you> ");
-    var input = Console.ReadLine();
+    var input = SlashCommandLine.ReadLine("you> ");
     if (input is null) break;
     if (string.IsNullOrWhiteSpace(input)) continue;
     if (input.StartsWith('/'))
@@ -70,6 +73,7 @@ while (true)
                 Console.WriteLine($"项目根目录: {references.RootDirectory}");
                 Console.WriteLine($"MuAgent 状态目录: {RuntimePaths.RootDirectory}");
                 Console.WriteLine($"运行临时目录: {Environment.GetEnvironmentVariable("TEMP")}");
+                await PrintRuntimeAsync(client);
                 await PrintContextStatusAsync(client, conversationId);
                 break;
             case "/compact":
@@ -221,6 +225,19 @@ static async Task PrintModelAsync(HttpClient client)
     Console.WriteLine($"API Key 已配置: {model.GetProperty("apiKeyConfigured").GetBoolean()}");
 }
 
+static async Task PrintRuntimeAsync(HttpClient client)
+{
+    using var response = await client.GetAsync("api/v1/runtime");
+    if (!await EnsureCommandSuccessAsync(response, "读取服务端运行配置")) return;
+    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+    var runtime = document.RootElement;
+    Console.WriteLine($"API 项目根目录: {runtime.GetProperty("projectDirectory").GetString()}");
+    Console.WriteLine($"API 状态目录: {runtime.GetProperty("stateDirectory").GetString()}");
+    Console.WriteLine("API 已加载配置文件:");
+    foreach (var path in runtime.GetProperty("configurationFiles").EnumerateArray())
+        Console.WriteLine($"  {path.GetString()}");
+}
+
 static async Task PrintContextStatusAsync(HttpClient client, string conversationId)
 {
     using var response = await client.GetAsync($"api/v1/conversations/{conversationId}/context");
@@ -367,31 +384,12 @@ static bool RequireArgument(string argument, string usage)
 
 static void PrintHelp()
 {
-    Console.WriteLine("""
-        可用命令：
-          /help                 显示本帮助
-          /model                显示当前模型、协议、端点和能力
-          /status               显示连接、身份、会话和文件上下文状态
-          /compact              把当前会话压缩到最大上下文的 1/3 以内
-          /new [标题]           创建新会话（文件引用继续保留）
-          /add [文件或目录]     添加文件；目录会递归，省略路径等同 /add .
-          /context              列出当前引用文件（/files 是别名）
-          /remove <路径|all>    移除文件、目录或全部引用
-          /mcp                  查看 MCP 服务和配置文件路径
-          /mcp_add [名称] <url> 添加或更新 HTTP MCP 服务
-          /mcp_remove <名称>    删除 MCP 配置
-          /mcp_enable <名称>    启用 MCP
-          /mcp_disable <名称>   禁用 MCP
-          /mcp_tools <名称>     查看 MCP 暴露的工具
-          /skills               查看 Skill、状态、目录和配置文件路径
-          /skills_add <目录>    添加 Skill 或 Skill 根目录
-          /skills_remove <目录> 从扫描配置中删除目录（不删除物理文件）
-          /skills_enable <名称> 启用 Skill
-          /skills_disable <名称> 禁用 Skill
-          /exit                 退出（/quit 是别名）
-
-        文件引用只包含 UTF-8/UTF-16 文本；自动排除生成目录、秘密文件、二进制和超限文件。
-        """);
+    Console.WriteLine("可用命令：");
+    foreach (var command in SlashCommandCatalog.Commands)
+        Console.WriteLine($"  {command.Usage,-28} {command.Description}");
+    Console.WriteLine();
+    Console.WriteLine("输入 / 后按 Tab 查看候选，输入命令前缀后按 Tab 自动补全。");
+    Console.WriteLine("文件引用只包含 UTF-8/UTF-16 文本；自动排除生成目录、秘密文件、二进制和超限文件。");
 }
 
 // 字段匹配忽略大小写，以兼容修复前使用默认序列化器输出 PascalCase 的服务端。

@@ -31,7 +31,7 @@ API 应用按以下顺序加载 JSON 配置：
 3. `<项目根目录>/.muagent/config/appsettings.json`：可选的项目运行参数覆盖；
 4. `<项目根目录>/.muagent/config/muagents.settings.json`：项目的模型、认证、Web 和秘密配置，优先级最高。
 
-“项目根目录”就是启动 API 时终端所在目录。项目配置不存在时，API 会从安装目录复制模板到 `.muagent/config/muagents.settings.json`；模板中的密钥为空，因此首次启动可能在创建文件后提示配置错误，填写后重新启动即可。整个 `.muagent/` 已被 Git 忽略。
+“项目根目录”默认是启动 API 时终端所在目录，也可由 `-d <项目路径>` 或 `--directory <项目路径>` 指定。项目配置不存在时，API 会从安装目录复制模板到 `.muagent/config/muagents.settings.json`；模板中的密钥为空，因此首次启动可能在创建文件后提示配置错误，填写后重新启动即可。整个 `.muagent/` 已被 Git 忽略。API 每次启动都会明确打印项目根、状态目录以及本次实际加载的配置文件绝对路径；CLI 的 `/status` 也可查询同一清单。
 
 ### 2.1 模型配置
 
@@ -108,9 +108,10 @@ API 应用按以下顺序加载 JSON 配置：
 Set-Location F:\project\Web\codex\muagents
 dotnet restore MuAgents.sln
 dotnet run --project apps/MuAgents.App
+dotnet run --project apps/MuAgents.App -- -d D:\work\my-project --urls http://127.0.0.1:5000
 ```
 
-无论二进制位于哪里，执行启动命令时的当前目录都会成为项目根目录。API 和 CLI 应从同一个项目目录启动，才能使用同一组 `.muagent` 配置和文件上下文。
+不传 `-d` 时，执行启动命令时的当前目录会成为项目根目录。传入相对路径时，相对于启动终端当前目录解析。API 和 CLI 应选择同一个项目目录，才能使用同一组 `.muagent` 配置和文件上下文。
 
 默认监听地址以 ASP.NET Core 启动输出为准。另开终端检查：
 
@@ -122,16 +123,28 @@ Invoke-RestMethod http://localhost:5000/api/v1/health
 
 ### 3.2 发布运行
 
+框架依赖的 Windows x64 发布命令如下，目标机器需安装 .NET 8 Runtime：
+
 ```powershell
-dotnet publish apps/MuAgents.App -c Release -o publish/MuAgents.App
-dotnet publish apps/MuAgents.Cli -c Release -o publish/MuAgents.Cli
+dotnet publish apps/MuAgents.App -c Release -r win-x64 --self-contained false -o publish/MuAgents.App
+dotnet publish apps/MuAgents.Cli -c Release -r win-x64 --self-contained false -o publish/MuAgents.Cli
 ```
+
+若目标机器没有 .NET Runtime，把 `--self-contained false` 改为 `--self-contained true`。Linux x64 使用 `-r linux-x64`，macOS 按处理器使用 `osx-x64` 或 `osx-arm64`。
 
 程序可以集中安装，项目状态不需要放在安装目录。例如：
 
 ```powershell
 Set-Location D:\work\my-project
 D:\tools\MuAgents\MuAgents.App.exe
+D:\tools\MuAgents\MuAgents.Cli.exe --url http://localhost:5000/ --user admin
+```
+
+也可保持终端在任意目录，显式指定同一个项目根：
+
+```powershell
+D:\tools\MuAgents\MuAgents.App.exe -d D:\work\my-project --urls http://127.0.0.1:5000
+D:\tools\MuAgents\MuAgents.Cli.exe -d D:\work\my-project --url http://127.0.0.1:5000/ --user admin
 ```
 
 此时项目根目录为 `D:\work\my-project`，全部状态位于 `D:\work\my-project\.muagent`，`/add .` 也引用 `D:\work\my-project`。切换到另一个项目目录启动，会得到另一套完全独立的配置、身份库和会话。
@@ -192,7 +205,7 @@ $headers = @{ Authorization = "Bearer $($login.accessToken)" }
 
 ```powershell
 dotnet run --project apps/MuAgents.Cli -- `
-  --url http://localhost:5000/ --user admin `
+  -d D:\work\my-project --url http://localhost:5000/ --user admin `
   --bootstrap --tenant-name Local
 ```
 
@@ -200,10 +213,12 @@ dotnet run --project apps/MuAgents.Cli -- `
 
 ```powershell
 dotnet run --project apps/MuAgents.Cli -- `
-  --url http://localhost:5000/ --user admin
+  -d D:\work\my-project --url http://localhost:5000/ --user admin
 ```
 
 多租户用户额外传 `--tenant <tenant-id>`。CLI 每次启动会新建会话；普通文本直接发送给模型，以 `/` 开头的内容由 CLI 解释为本地命令。
+
+交互终端支持与 Codex/Claude Code 类似的斜杠命令补全：输入 `/` 后按 `Tab` 显示所有候选；输入命令前缀后按 `Tab`，唯一候选会自动补齐，多个候选会先扩展共同前缀、再次按 `Tab` 显示候选清单。上下方向键可浏览本次运行的输入历史。输入被管道重定向时自动退回普通逐行读取。
 
 ### 5.1 斜杠命令
 
@@ -211,7 +226,7 @@ dotnet run --project apps/MuAgents.Cli -- `
 | --- | --- |
 | `/help` | 显示命令帮助。 |
 | `/model` | 从 API 查询当前模型名、协议、完整端点、上下文/输出上限、图片/工具能力和密钥是否已配置；不会显示密钥值。 |
-| `/status` | 显示 API、用户、租户、会话、项目根目录、`.muagent` 状态目录、临时目录、引用文件统计，以及当前/最大上下文 Token。 |
+| `/status` | 显示 API、用户、租户、会话、CLI/API 项目根目录、`.muagent` 状态目录、服务端已加载配置文件、临时目录、引用文件统计，以及当前/最大上下文 Token。 |
 | `/compact` | 手动持久化压缩当前会话；压缩后不超过最大上下文的 1/3。若原本已低于目标则不改写。 |
 | `/new [标题]` | 新建会话，当前文件引用继续保留。 |
 | `/add [文件或目录]` | 添加单文件或递归添加目录；省略路径等同 `/add .`。包含空格的路径可用双引号包围。 |

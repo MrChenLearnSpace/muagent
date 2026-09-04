@@ -7,16 +7,19 @@ namespace MuAgents.Abstractions;
 /// </summary>
 public static class RuntimePaths
 {
+    private static readonly object InitializationLock = new();
     private static int _processInitialized;
+    private static string? _projectDirectory;
 
     /// <summary>程序二进制所在目录，只用于读取随程序发布的默认配置和资源。</summary>
     public static string ApplicationDirectory { get; } = Path.GetFullPath(AppContext.BaseDirectory);
 
-    /// <summary>启动命令所在的项目目录；文件引用和扩展相对路径均以此为基准。</summary>
-    public static string ProjectDirectory { get; } = Path.GetFullPath(Directory.GetCurrentDirectory());
+    /// <summary>由 -d 选择或默认采用启动命令所在位置的项目目录；文件引用和扩展相对路径均以此为基准。</summary>
+    public static string ProjectDirectory =>
+        Volatile.Read(ref _projectDirectory) ?? Path.GetFullPath(Directory.GetCurrentDirectory());
 
     /// <summary>项目的 MuAgent 状态根目录，即 &lt;项目目录&gt;/.muagent。</summary>
-    public static string RootDirectory { get; } = Path.Combine(ProjectDirectory, ".muagent");
+    public static string RootDirectory => Path.Combine(ProjectDirectory, ".muagent");
 
     /// <summary>默认持久数据目录。</summary>
     public static string DataDirectory => ResolveWritePath("data", "runtime data directory");
@@ -25,25 +28,40 @@ public static class RuntimePaths
     /// 在任何配置、HTTP 或文件组件启动前固定进程环境。除了当前工作目录，系统临时目录、
     /// .NET CLI 主目录、NuGet 缓存和单文件解压目录也全部改到项目的 .muagent 内。
     /// </summary>
-    public static void InitializeProcessEnvironment()
+    public static void InitializeProcessEnvironment(string? projectDirectory = null)
     {
-        if (Interlocked.Exchange(ref _processInitialized, 1) != 0) return;
+        var normalizedProjectDirectory = Path.GetFullPath(projectDirectory ?? Directory.GetCurrentDirectory());
+        if (!Directory.Exists(normalizedProjectDirectory))
+            throw new DirectoryNotFoundException($"Project directory does not exist: {normalizedProjectDirectory}");
 
-        Directory.CreateDirectory(RootDirectory);
-        Directory.SetCurrentDirectory(ProjectDirectory);
-        var temporaryDirectory = EnsureDirectory(Path.Combine("data", "temp", "process"), "process temporary directory");
-        var dotnetHome = EnsureDirectory(Path.Combine("data", "dotnet", "home"), ".NET CLI home directory");
-        var nugetPackages = EnsureDirectory(Path.Combine("data", "nuget", "packages"), "NuGet packages directory");
-        var nugetCache = EnsureDirectory(Path.Combine("data", "nuget", "http-cache"), "NuGet HTTP cache directory");
-        var bundleDirectory = EnsureDirectory(Path.Combine("data", "temp", "dotnet-bundle"), ".NET bundle directory");
+        lock (InitializationLock)
+        {
+            if (_processInitialized != 0)
+            {
+                if (!string.Equals(ProjectDirectory, normalizedProjectDirectory, PathComparison))
+                    throw new InvalidOperationException($"MuAgents has already been initialized for '{ProjectDirectory}'.");
+                return;
+            }
 
-        SetPortableEnvironmentVariable("TEMP", temporaryDirectory);
-        SetPortableEnvironmentVariable("TMP", temporaryDirectory);
-        SetPortableEnvironmentVariable("TMPDIR", temporaryDirectory);
-        SetPortableEnvironmentVariable("DOTNET_CLI_HOME", dotnetHome);
-        SetPortableEnvironmentVariable("NUGET_PACKAGES", nugetPackages);
-        SetPortableEnvironmentVariable("NUGET_HTTP_CACHE_PATH", nugetCache);
-        SetPortableEnvironmentVariable("DOTNET_BUNDLE_EXTRACT_BASE_DIR", bundleDirectory);
+            // 必须先固定项目根，再解析任何可写路径；否则二进制安装目录可能被误当成状态目录。
+            Volatile.Write(ref _projectDirectory, normalizedProjectDirectory);
+            Directory.CreateDirectory(RootDirectory);
+            Directory.SetCurrentDirectory(ProjectDirectory);
+            var temporaryDirectory = EnsureDirectory(Path.Combine("data", "temp", "process"), "process temporary directory");
+            var dotnetHome = EnsureDirectory(Path.Combine("data", "dotnet", "home"), ".NET CLI home directory");
+            var nugetPackages = EnsureDirectory(Path.Combine("data", "nuget", "packages"), "NuGet packages directory");
+            var nugetCache = EnsureDirectory(Path.Combine("data", "nuget", "http-cache"), "NuGet HTTP cache directory");
+            var bundleDirectory = EnsureDirectory(Path.Combine("data", "temp", "dotnet-bundle"), ".NET bundle directory");
+
+            SetPortableEnvironmentVariable("TEMP", temporaryDirectory);
+            SetPortableEnvironmentVariable("TMP", temporaryDirectory);
+            SetPortableEnvironmentVariable("TMPDIR", temporaryDirectory);
+            SetPortableEnvironmentVariable("DOTNET_CLI_HOME", dotnetHome);
+            SetPortableEnvironmentVariable("NUGET_PACKAGES", nugetPackages);
+            SetPortableEnvironmentVariable("NUGET_HTTP_CACHE_PATH", nugetCache);
+            SetPortableEnvironmentVariable("DOTNET_BUNDLE_EXTRACT_BASE_DIR", bundleDirectory);
+            Volatile.Write(ref _processInitialized, 1);
+        }
     }
 
     /// <summary>
