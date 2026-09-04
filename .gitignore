@@ -9,6 +9,8 @@
 [Pp]ublish/
 out/
 
+.codex/
+
 # .NET generated files
 *.dll
 *.exe
