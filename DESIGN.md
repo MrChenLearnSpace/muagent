@@ -403,7 +403,9 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 }
 ```
 
-配置优先级建议为：代码默认值 < `appsettings.json` < 环境变量 < 会话级覆盖。对每项配置启动时进行范围校验。
+启动命令所在目录是项目根目录，项目运行状态统一保存到 `<项目>/.muagent/`。上述相对数据库路径实际解析为 `.muagent/data/muagents.db`；MCP、Skill 和模型配置分别位于 `.muagent/config/`，因此多个项目不会共享会话、身份或扩展状态。
+
+配置优先级为：代码默认值 < 安装目录 `appsettings.json`/模板 < 项目 `.muagent/config/appsettings.json` < 项目 `.muagent/config/muagents.settings.json` < 环境变量 < 启动参数 < 会话级覆盖。对每项配置启动时进行范围校验。
 
 ## 17. 安全边界
 

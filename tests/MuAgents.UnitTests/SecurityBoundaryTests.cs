@@ -72,7 +72,7 @@ public sealed class SecurityBoundaryTests
     }
 
     [Fact]
-    public void RuntimeWritePathsCannotEscapeApplicationRoot()
+    public void RuntimeWritePathsCannotEscapeProjectStateRoot()
     {
         var outside = Path.GetFullPath(Path.Combine(RuntimePaths.RootDirectory, "..", "outside.db"));
 
@@ -80,6 +80,15 @@ public sealed class SecurityBoundaryTests
             RuntimePaths.ResolveWritePath(outside, "test path"));
 
         Assert.Equal(MuAgentErrorCategory.Configuration, exception.Category);
+    }
+
+    [Fact]
+    public void RuntimeStateRootIsDotMuagentInsideStartupProject()
+    {
+        Assert.Equal(
+            Path.Combine(RuntimePaths.ProjectDirectory, ".muagent"),
+            RuntimePaths.RootDirectory,
+            ignoreCase: OperatingSystem.IsWindows());
     }
 
     [Fact]
@@ -95,7 +104,7 @@ public sealed class SecurityBoundaryTests
     }
 
     [Fact]
-    public void RuntimeTemporaryDirectoryIsCreatedAndRemovedUnderApplicationRoot()
+    public void RuntimeTemporaryDirectoryIsCreatedAndRemovedUnderProjectStateRoot()
     {
         string path;
         using (var temporaryDirectory = RuntimePaths.CreateTemporaryDirectory("path-test"))
@@ -188,7 +197,7 @@ public sealed class SecurityBoundaryTests
             var paths = result.Content.Split('\t');
             Assert.Equal(4, paths.Length);
             Assert.Equal(
-                Path.TrimEndingDirectorySeparator(RuntimePaths.RootDirectory),
+                Path.TrimEndingDirectorySeparator(RuntimePaths.ProjectDirectory),
                 Path.TrimEndingDirectorySeparator(paths[0]),
                 ignoreCase: true);
             temporaryPath = paths[1];

@@ -316,8 +316,8 @@ public sealed class McpClientManager : IMcpClientManager, IAsyncDisposable
             var start = new ProcessStartInfo
             {
                 FileName = profile.Command,
-                // 保持相对脚本路径基于程序根目录解析；临时文件则通过下方环境变量进入专用目录。
-                WorkingDirectory = RuntimePaths.RootDirectory,
+                // 相对脚本路径基于项目根目录解析；临时文件则通过环境变量进入 .muagent 专用目录。
+                WorkingDirectory = RuntimePaths.ProjectDirectory,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -327,7 +327,7 @@ public sealed class McpClientManager : IMcpClientManager, IAsyncDisposable
             foreach (var argument in profile.Arguments) start.ArgumentList.Add(argument);
             foreach (var item in profile.Environment) start.Environment[item.Key] = item.Value;
             // MCP 服务是第三方进程，显式重定向所有常见临时目录变量，防止它回落到系统盘。
-            // 固定变量最后写入，配置文件不能用同名 Environment 条目绕过程序根目录约束。
+            // 固定变量最后写入，配置文件不能用同名 Environment 条目绕过 .muagent 约束。
             RuntimePaths.ConfigureChildProcess(start, _temporaryDirectory.DirectoryPath);
             _process = new Process { StartInfo = start, EnableRaisingEvents = true };
             _process.ErrorDataReceived += (_, args) => { if (args.Data is not null) logger.LogDebug("MCP {Server}: {Message}", profile.Name, args.Data); };

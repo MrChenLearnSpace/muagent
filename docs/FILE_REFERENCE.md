@@ -1,6 +1,6 @@
 # MuAgents 项目文件详细说明
 
-本文按目录解释源码和配置文件的职责。`bin/`、`obj/`、`data/` 和本地敏感配置属于构建或运行产物，不是项目源码。
+本文按目录解释源码和配置文件的职责。`bin/`、`obj/` 和项目级 `.muagent/` 属于构建或运行产物，不是项目源码。
 
 ## 1. 总体依赖关系
 
@@ -38,19 +38,18 @@ MuAgents.App / MuAgents.Cli
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.App.csproj` | ASP.NET Core API 项目定义及对各功能模块的引用。 |
-| `Program.cs` | API 主入口：固定运行根目录、加载配置、注册认证/授权/限流、初始化数据库并映射全部 `/api/v1` 路由；提供模型状态、上下文状态/压缩、MCP/Skill 动态管理接口，把文件引用包装为不可信用户内容，并负责把智能体事件序列化为 NDJSON 流。 |
+| `Program.cs` | API 主入口：把启动目录识别为项目根，创建并加载 `.muagent/config` 项目配置，注册认证/授权/限流、初始化数据库并映射全部 `/api/v1` 路由；提供模型状态、上下文压缩、MCP/Skill 动态管理及 NDJSON 流。 |
 | `Authentication.cs` | 本地认证服务：密码哈希校验、JWT 签发、首次管理员初始化、用户/租户/成员管理；也定义认证配置和登录会话模型。 |
 | `appsettings.json` | 非敏感运行默认值，包括智能体限制、上下文预算、SQLite、内容处理、OCR、Skill、Web、MCP 和日志。 |
-| `muagents.settings.json` | 模型、Web 搜索和认证配置模板。API Key 与 JWT 密钥默认留空。 |
-| `muagents.settings.local.json` | 可选的本机覆盖配置，不应提交 Git；开发运行时会复制到输出目录。 |
+| `muagents.settings.json` | 随程序发布的模型、Web 搜索和认证模板；每个项目首次启动时复制到 `.muagent/config/muagents.settings.json`。 |
 
 ### 3.2 `MuAgents.Cli`
 
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.Cli.csproj` | 交互式命令行客户端项目定义。 |
-| `Program.cs` | 首先固定 CLI 工作目录和全部可写缓存，之后解析参数、隐藏读取密码、登录并创建会话，分派模型/状态、文件上下文、MCP/Skill 管理和 `/compact` 等斜杠命令；逐行消费 NDJSON，并在每次回答后显示当前/最大上下文。 |
-| `FileReferenceSet.cs` | 管理 CLI 文件上下文：递归遍历当前或指定目录、排除生成/敏感/二进制文件、识别 UTF 文本、执行文件数与字节上限，并生成发送快照。 |
+| `Program.cs` | 首先把启动目录固定为项目根、把可写缓存放入 `.muagent`，之后登录并分派文件上下文、MCP/Skill 管理和 `/compact` 等命令；状态中显示项目根与状态目录。 |
+| `FileReferenceSet.cs` | 管理 CLI 文件上下文：相对路径基于项目根，递归遍历时排除 `.muagent`、生成目录、敏感/二进制文件，执行文件数与字节上限并生成发送快照。 |
 
 ## 4. 公共抽象 `src/MuAgents.Abstractions`
 
@@ -65,7 +64,7 @@ MuAgents.App / MuAgents.Cli
 | `Content.cs` | 内容描述、读取选项、结构化文档、内容读取器、图片处理器和 OCR 接口。 |
 | `Skills.cs` | Skill 清单、脚本执行策略、目录接口、脚本请求和执行结果。 |
 | `Web.cs` | Web 搜索结果、搜索接口、网页内容和安全抓取接口。 |
-| `RuntimePaths.cs` | 可移植路径安全边界：以可执行文件目录为唯一根目录，初始化 API/CLI 工作目录与 .NET/NuGet/临时环境变量，规范化并验证写路径，为所有外部子进程覆盖可写缓存，以及创建/清理根目录内临时目录。 |
+| `RuntimePaths.cs` | 项目隔离路径边界：记录程序安装目录和启动项目目录，把状态根固定为 `<项目>/.muagent`，规范化并验证写路径，并为 API、CLI 和子进程重定向 .NET/NuGet/临时缓存。 |
 | `Telemetry.cs` | 全局 `ActivitySource` 与 `Meter` 名称和实例，供运行时与宿主统一采集。 |
 
 ## 5. 核心运行时 `src/MuAgents.Core`
@@ -116,7 +115,7 @@ MuAgents.App / MuAgents.Cli
 | `PdfContentReader.cs` | 调用 Poppler 提取指定页文本；无文本时可渲染页面并调用 OCR。 |
 | `ImageInputProcessor.cs` | 处理 HTTPS URL、本地文件和 Data URL 图片，校验类型、字节数、像素数和允许目录，输出模型统一图片片段。 |
 | `ReadFileTool.cs` | 将内容读取能力暴露为 `read_file` 工具，并执行工作区根目录边界检查。 |
-| `ExternalProcess.cs` | 在 `data/temp` 下运行受控外部内容进程，处理参数、超时、标准输出/错误及进程终止。 |
+| `ExternalProcess.cs` | 在 `.muagent/data/temp` 下运行受控外部内容进程，处理参数、超时、标准输出/错误及进程终止。 |
 
 ### 9.2 `src/MuAgents.Ocr`
 
@@ -124,7 +123,7 @@ MuAgents.App / MuAgents.Cli
 | --- | --- |
 | `MuAgents.Ocr.csproj` | Tesseract OCR 适配项目定义。 |
 | `TesseractOcrOptions.cs` | 可执行文件、语言、超时和最大输出长度配置。 |
-| `TesseractOcrEngine.cs` | 调用 Tesseract 识别图片，解析 TSV 区域和纯文本，并清理程序根目录内的临时文件。 |
+| `TesseractOcrEngine.cs` | 调用 Tesseract 识别图片，解析 TSV 区域和纯文本，并清理 `.muagent` 内的临时文件。 |
 
 ## 10. Web `src/MuAgents.Web`
 
@@ -142,7 +141,7 @@ MuAgents.App / MuAgents.Cli
 | --- | --- |
 | `MuAgents.Skills.csproj` | Skill 发现和脚本执行项目定义。 |
 | `SkillOptions.cs` | Skill 根目录、脚本策略、允许运行时和超时配置。 |
-| `SkillConfigurationStore.cs` | 初始化并原子保存 `<程序根目录>/config/skills.json`，维护 Skill 扫描目录与不区分大小写的禁用清单，并修复重复默认目录。 |
+| `SkillConfigurationStore.cs` | 初始化并原子保存 `<项目>/.muagent/config/skills.json`，维护基于项目根解析的 Skill 扫描目录与禁用清单。 |
 | `FileSystemSkillCatalog.cs` | 根据动态目录扫描单个 Skill 或根目录中的 `SKILL.md`，解析前置元数据和指令，校验路径，并按启用状态返回清单。 |
 | `ProcessScriptRunner.cs` | 根据安全策略批准脚本，在允许的运行时中启动进程，限制路径、超时和输出，并使用根目录内临时工作区。 |
 
@@ -152,8 +151,8 @@ MuAgents.App / MuAgents.Cli
 | --- | --- |
 | `MuAgents.Mcp.csproj` | Model Context Protocol 客户端项目定义。 |
 | `McpOptions.cs` | MCP 服务列表、传输方式、命令/地址、环境变量、工具允许列表和缓存时间。 |
-| `McpConfigurationStore.cs` | 初始化并原子保存 `<程序根目录>/config/mcp.json`，校验和维护 MCP 服务的添加、更新、启用、禁用与删除。 |
-| `McpClientManager.cs` | 动态读取配置，创建 Stdio 或 Streamable HTTP 客户端，缓存工具清单，应用工具白/黑名单并管理连接生命周期；配置变更时清除对应连接与缓存，Stdio 临时目录被重定向到程序根目录内。 |
+| `McpConfigurationStore.cs` | 初始化并原子保存 `<项目>/.muagent/config/mcp.json`，校验和维护 MCP 服务的添加、更新、启用、禁用与删除。 |
+| `McpClientManager.cs` | 动态读取配置，创建 Stdio 或 Streamable HTTP 客户端并管理连接；Stdio 工作目录是项目根，临时目录位于项目 `.muagent`。 |
 | `McpInvokeTool.cs` | 把 MCP 工具统一映射到 MuAgents 工具网关，并转发参数、结果和错误。 |
 
 ## 13. 依赖注入装配 `src/MuAgents.Hosting`
@@ -181,19 +180,20 @@ MuAgents.App / MuAgents.Cli
 | `EventEnvelopeTests.cs` | 验证 NDJSON 外壳和事件数据统一输出 camelCase，避免 CLI 因字段大小写失配而丢失流内容。 |
 | `FileReferenceSetTests.cs` | 验证目录递归引用、生成/敏感文件排除和按目录移除。 |
 | `DynamicConfigurationTests.cs` | 验证 MCP 与 Skill 添加、删除、启停、持久化、重新加载和默认目录去重。 |
-| `TestPaths.cs` | 在测试程序集输出目录下创建独立临时目录，确保测试不向 C 盘系统临时目录写入。 |
+| `TestPaths.cs` | 在测试项目的 `.muagent/data/tests` 下创建独立临时目录，确保测试状态遵守项目隔离。 |
 
 ## 15. 运行时生成内容
 
 | 路径 | 是否提交 | 说明 |
 | --- | --- | --- |
 | `**/bin/`、`**/obj/` | 否 | 编译和 NuGet 中间产物。 |
-| `data/muagents.db` | 否 | SQLite 业务数据。 |
-| `data/keys/` | 否 | Cookie/Data Protection 密钥，应和数据库一起安全备份。 |
-| `data/temp/` | 否 | PDF、OCR、脚本和受控进程临时数据，正常结束后会尽量清理。 |
-| `data/dotnet/` | 否 | API/CLI 或子进程使用的便携式 .NET CLI 主目录。 |
-| `data/nuget/` | 否 | 子进程使用的 NuGet 包缓存与 HTTP 缓存。 |
-| `config/mcp.json` | 否 | 动态 MCP 服务、传输参数、过滤规则和启停状态。 |
-| `config/skills.json` | 否 | 动态 Skill 扫描目录和禁用清单。 |
+| `.muagent/config/muagents.settings.json` | 否 | 当前项目的模型、认证、Web 和秘密配置。 |
+| `.muagent/config/appsettings.json` | 否 | 可选的项目运行参数覆盖。 |
+| `.muagent/config/mcp.json` | 否 | 当前项目的 MCP 服务、过滤规则和启停状态。 |
+| `.muagent/config/skills.json` | 否 | 当前项目的 Skill 扫描目录和禁用清单。 |
+| `.muagent/data/muagents.db` | 否 | 当前项目独立的 SQLite 业务数据。 |
+| `.muagent/data/keys/` | 否 | Cookie/Data Protection 密钥，应和数据库一起备份。 |
+| `.muagent/data/temp/` | 否 | PDF、OCR、脚本和受控进程临时数据。 |
+| `.muagent/data/dotnet/` | 否 | 子进程使用的 .NET CLI 主目录。 |
+| `.muagent/data/nuget/` | 否 | 子进程使用的 NuGet 包与 HTTP 缓存。 |
 | `skills/` | 视部署而定 | 业务 Skill 和脚本；若属于项目能力可纳入版本控制，若含私密数据则单独部署。 |
-| `muagents.settings.local.json` | 否 | 模型 API Key、JWT 密钥等本机秘密。 |

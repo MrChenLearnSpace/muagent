@@ -21,7 +21,7 @@ public sealed class AuthenticationOptions
     public int CookieDays { get; set; } = 7;
     /// <summary>新密码最少字符数。</summary>
     public int MinimumPasswordLength { get; set; } = 12;
-    /// <summary>Data Protection 密钥目录，必须位于程序根目录内。</summary>
+    /// <summary>Data Protection 密钥目录，必须位于项目的 .muagent 内。</summary>
     public string DataProtectionKeysPath { get; set; } = "data/keys";
 }
 

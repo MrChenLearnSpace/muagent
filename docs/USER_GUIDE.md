@@ -20,17 +20,18 @@
 | 扫描件 OCR | Tesseract | `tesseract` |
 | Skill 脚本 | 对应语言运行时 | `dotnet`、`python`、`node`、`pwsh`、`bash` |
 
-外部程序可以位于系统 `PATH` 中，也可以在配置中填写其绝对路径。它们产生的 MuAgents 工作文件仍会放在程序根目录的 `data/temp/` 下。
+外部程序可以位于系统 `PATH` 中，也可以在配置中填写其绝对路径。它们产生的 MuAgents 工作文件会放在当前项目的 `.muagent/data/temp/` 下。
 
 ## 2. 配置文件与加载顺序
 
-API 应用使用三个 JSON 配置来源：
+API 应用按以下顺序加载 JSON 配置：
 
-1. `appsettings.json`：运行时、内容、工具、持久化、MCP 等非敏感默认值；
-2. `muagents.settings.json`：模型、认证和 Web 服务的结构化默认值；
-3. `muagents.settings.local.json`：本机覆盖值，最后加载，适合保存 API Key 和 JWT 签名密钥。
+1. `<程序安装目录>/appsettings.json`：随程序发布的非敏感默认值；
+2. `<程序安装目录>/muagents.settings.json`：随程序发布的模型和认证模板；
+3. `<项目根目录>/.muagent/config/appsettings.json`：可选的项目运行参数覆盖；
+4. `<项目根目录>/.muagent/config/muagents.settings.json`：项目的模型、认证、Web 和秘密配置，优先级最高。
 
-三个文件均从可执行文件所在目录读取。开发时把本地配置放在 `apps/MuAgents.App/`；发布后把它放在 `MuAgents.App.exe` 同目录。该文件已被 Git 忽略。
+“项目根目录”就是启动 API 时终端所在目录。项目配置不存在时，API 会从安装目录复制模板到 `.muagent/config/muagents.settings.json`；模板中的密钥为空，因此首次启动可能在创建文件后提示配置错误，填写后重新启动即可。整个 `.muagent/` 已被 Git 忽略。
 
 ### 2.1 模型配置
 
@@ -60,7 +61,7 @@ API 应用使用三个 JSON 配置来源：
 | `ChatCompletions` | `/v1/chat/completions` | OpenAI Chat Completions 风格 |
 | `Messages` | `/v1/messages` | Anthropic Messages 风格 |
 
-`BaseUrl` 必须是带协议头的绝对 URL，并建议以 `/` 结尾。最终地址由 `BaseUrl` 和 `Endpoint` 组合，务必与模型服务实际路由一致。不要把真实密钥写入 `muagents.settings.json` 或任何文档。
+`BaseUrl` 必须是带协议头的绝对 URL，并建议以 `/` 结尾。最终地址由 `BaseUrl` 和 `Endpoint` 组合，务必与模型服务实际路由一致。真实密钥只写入项目的 `.muagent/config/muagents.settings.json`，不要写入源码模板或文档。
 
 ### 2.2 认证配置
 
@@ -82,14 +83,14 @@ API 应用使用三个 JSON 配置来源：
 
 - `JwtSigningKey` 少于 32 个字符时应用会拒绝启动。
 - 密码使用 ASP.NET Core PasswordHasher，迭代次数为 210,000。
-- `DataProtectionKeysPath` 必须解析到程序根目录内。
+- `DataProtectionKeysPath` 必须解析到项目的 `.muagent/` 内。
 - 登录和首次初始化接口按来源 IP 限制为每分钟 10 次。
 
 ### 2.3 数据与上下文配置
 
 常用配置位于 `appsettings.json`：
 
-- `MuAgents:Persistence:ConnectionString`：默认 `Data Source=data/muagents.db`；相对 SQLite 路径以程序根目录为基准。
+- `MuAgents:Persistence:ConnectionString`：默认 `Data Source=data/muagents.db`；实际保存为 `.muagent/data/muagents.db`。
 - `MuAgents:Agent:MaxToolIterations`：单轮最多工具迭代次数，默认 12。
 - `MuAgents:Agent:ToolTimeoutSeconds`：一次工具调用超时，默认 60 秒。
 - `MuAgents:Agent:MaxConcurrency`：同一批工具调用并发数，默认 4。
@@ -104,9 +105,12 @@ API 应用使用三个 JSON 配置来源：
 ### 3.1 从源码启动
 
 ```powershell
+Set-Location F:\project\Web\codex\muagents
 dotnet restore MuAgents.sln
 dotnet run --project apps/MuAgents.App
 ```
+
+无论二进制位于哪里，执行启动命令时的当前目录都会成为项目根目录。API 和 CLI 应从同一个项目目录启动，才能使用同一组 `.muagent` 配置和文件上下文。
 
 默认监听地址以 ASP.NET Core 启动输出为准。另开终端检查：
 
@@ -123,21 +127,28 @@ dotnet publish apps/MuAgents.App -c Release -o publish/MuAgents.App
 dotnet publish apps/MuAgents.Cli -c Release -o publish/MuAgents.Cli
 ```
 
-把配置、程序、`data/` 和 `skills/` 作为一个整体目录部署。API 与 CLI 都会把工作目录切换到各自可执行文件所在目录，`/add .` 也从 CLI 程序目录读取，不使用启动终端所在目录。
+程序可以集中安装，项目状态不需要放在安装目录。例如：
+
+```powershell
+Set-Location D:\work\my-project
+D:\tools\MuAgents\MuAgents.App.exe
+```
+
+此时项目根目录为 `D:\work\my-project`，全部状态位于 `D:\work\my-project\.muagent`，`/add .` 也引用 `D:\work\my-project`。切换到另一个项目目录启动，会得到另一套完全独立的配置、身份库和会话。
 
 启动入口会在创建宿主或 HTTP 客户端之前重定向以下环境变量：
 
-| 环境变量 | 程序目录内位置 |
+| 环境变量 | 项目内位置 |
 | --- | --- |
-| `TEMP`、`TMP`、`TMPDIR` | `data/temp/process/`；具体外部任务使用其独立子目录。 |
-| `DOTNET_CLI_HOME` | `data/dotnet/home/` |
-| `NUGET_PACKAGES` | `data/nuget/packages/` |
-| `NUGET_HTTP_CACHE_PATH` | `data/nuget/http-cache/` |
-| `DOTNET_BUNDLE_EXTRACT_BASE_DIR` | `data/temp/dotnet-bundle/` |
+| `TEMP`、`TMP`、`TMPDIR` | `.muagent/data/temp/process/`；具体外部任务使用独立子目录。 |
+| `DOTNET_CLI_HOME` | `.muagent/data/dotnet/home/` |
+| `NUGET_PACKAGES` | `.muagent/data/nuget/packages/` |
+| `NUGET_HTTP_CACHE_PATH` | `.muagent/data/nuget/http-cache/` |
+| `DOTNET_BUNDLE_EXTRACT_BASE_DIR` | `.muagent/data/temp/dotnet-bundle/` |
 
-MCP、OCR、PDF/内容处理及 Skill 脚本子进程会再次覆盖这些变量，配置中的同名环境变量不能把写入位置改到程序根目录之外。程序不会把运行数据写入 Windows 用户目录、系统临时目录或 C 盘。
+MCP、OCR、PDF/内容处理及 Skill 脚本子进程会再次覆盖这些变量，配置中的同名环境变量不能把写入位置改到 `.muagent/` 之外。
 
-任何配置的写入路径如果逃逸程序根目录，程序会抛出异常并拒绝使用。读取文件和图片还受到各自允许根目录的额外限制。这里的“程序根目录”是构建/发布产物实际所在目录，不是源码仓库目录，也不是调用命令时的 PowerShell 目录。
+任何可写路径如果逃逸 `.muagent/`，程序会抛出异常并拒绝使用。文件、图片、Skill 和 MCP Stdio 的相对读取路径以项目根目录解析，并受到各自允许目录的额外限制。
 
 ## 4. 首次初始化和登录
 
@@ -200,7 +211,7 @@ dotnet run --project apps/MuAgents.Cli -- `
 | --- | --- |
 | `/help` | 显示命令帮助。 |
 | `/model` | 从 API 查询当前模型名、协议、完整端点、上下文/输出上限、图片/工具能力和密钥是否已配置；不会显示密钥值。 |
-| `/status` | 显示 API、用户、租户、会话、CLI 程序根目录、程序内临时目录、引用文件统计，以及当前/最大上下文 Token。 |
+| `/status` | 显示 API、用户、租户、会话、项目根目录、`.muagent` 状态目录、临时目录、引用文件统计，以及当前/最大上下文 Token。 |
 | `/compact` | 手动持久化压缩当前会话；压缩后不超过最大上下文的 1/3。若原本已低于目标则不改写。 |
 | `/new [标题]` | 新建会话，当前文件引用继续保留。 |
 | `/add [文件或目录]` | 添加单文件或递归添加目录；省略路径等同 `/add .`。包含空格的路径可用双引号包围。 |
@@ -241,8 +252,8 @@ MCP 与 Skill 配置修改命令要求当前登录用户是系统管理员。普
 - 单文件最多 256 KiB，总计最多 2 MiB；
 - 接受有效 UTF-8、UTF-8 BOM、UTF-16 LE/BE 文本；
 - 不跟随目录符号链接；
-- 自动跳过 `.git`、`.svn`、`.hg`、`.vs`、`.idea`、`bin`、`obj`、`node_modules`、`data`；
-- 自动跳过 `.env`、`muagents.settings.local.json`、证书/私钥、程序集、压缩包、图片和 PDF。
+- 自动跳过 `.git`、`.muagent`、`.svn`、`.hg`、`.vs`、`.idea`、`bin`、`obj`、`node_modules`、`data`；
+- 自动跳过 `.env`、`muagents.settings.json`、证书/私钥、程序集、压缩包、图片和 PDF。
 
 跳过原因会显示在终端。文件由 CLI 读取后作为不可信的 User 消息内容上传，API 不会根据客户端路径直接读取服务器磁盘。引用大量文件仍会占用模型上下文；如果超过模型预算，请缩小目录或分批引用。
 
@@ -341,7 +352,7 @@ Invoke-RestMethod -Method Put `
 
 - `MuAgents:Content:FileTool:WorkspaceRoots` 控制 `read_file` 工具可访问的文件目录；
 - `MuAgents:Content:Images:AllowedRoots` 控制图片文件引用可访问的目录；
-- 空数组表示只允许程序根目录，不表示允许任意磁盘路径；
+- 空数组表示只允许当前项目根目录，不表示允许任意磁盘路径；
 - 路径会规范化后再校验，防止 `..` 或相似前缀绕过边界。
 
 ### 8.2 支持内容
@@ -379,7 +390,7 @@ Invoke-RestMethod -Method Put `
 首次启动会把 `MuAgents:Mcp` 默认值写入下面的运行时配置，之后终端命令直接维护该文件：
 
 ```text
-<程序根目录>/config/mcp.json
+<项目根目录>/.muagent/config/mcp.json
 ```
 
 HTTP MCP 最便捷的管理方式：
@@ -427,14 +438,14 @@ HTTP MCP 最便捷的管理方式：
 - `DELETE /api/v1/mcp/{name}`：删除；
 - `GET /api/v1/mcp/{server}/tools`：发现工具。
 
-前三个写操作要求系统管理员。Stdio 子进程的工作目录固定为程序根目录，`TEMP`、`TMP`、`TMPDIR` 固定到 `data/temp/mcp/`，不会使用 C 盘系统临时目录。
+前三个写操作要求系统管理员。Stdio 子进程的工作目录固定为项目根目录，`TEMP`、`TMP`、`TMPDIR` 固定到 `.muagent/data/temp/mcp/`。
 
 ### 9.3 Skill
 
 Skill 的目录和禁用清单持久化在：
 
 ```text
-<程序根目录>/config/skills.json
+<项目根目录>/.muagent/config/skills.json
 ```
 
 ```json
@@ -455,7 +466,7 @@ Skill 的目录和禁用清单持久化在：
 /skills_remove D:\shared-skills
 ```
 
-`/skills_add` 接受单个 Skill 目录，也接受其直接子目录各自包含 `SKILL.md` 的根目录。相对路径以 API 程序根目录为基准；绝对路径必须是 API 所在机器可读的目录。命令只修改扫描配置，不复制或删除 Skill 文件。启停立即生效，写操作要求系统管理员。
+`/skills_add` 接受单个 Skill 目录，也接受其直接子目录各自包含 `SKILL.md` 的根目录。相对路径以项目根目录为基准；绝对路径必须是 API 所在机器可读的目录。命令只修改 `.muagent/config/skills.json`，不复制或删除 Skill 文件。启停立即生效，写操作要求系统管理员。
 
 ```text
 skills/
@@ -477,19 +488,19 @@ HTTP API 对应为 `GET /api/v1/skills/config`、`POST/DELETE /api/v1/skills/dir
 
 - **应用启动即报 JWT 配置错误**：检查 `JwtSigningKey` 是否至少 32 个字符。
 - **模型返回 404**：检查 `BaseUrl`、`Endpoint` 与 `Protocol` 是否匹配服务端真实路由。
-- **模型返回 401/403**：检查本地配置中的 API Key，确认配置文件位于实际可执行文件旁。
+- **模型返回 401/403**：检查当前项目 `.muagent/config/muagents.settings.json` 中的 API Key。
 - **模型拒绝输出长度**：降低 `MaxOutputTokens`，并确认模型服务接受相同字段和范围。
-- **文件访问被拒绝**：把文件放入程序根目录，或把规范化后的绝对目录加入相应允许根目录。
+- **文件访问被拒绝**：把文件放入当前项目目录，或把规范化后的绝对目录加入相应允许根目录。
 - **PDF 无文本**：安装 Poppler；扫描 PDF 还要安装 Tesseract 及对应语言包。
 - **脚本被拒绝**：检查 `ScriptPolicy`、`AllowedRuntimes` 和请求的 `approved`。
 - **HTTP 429**：登录或初始化请求过于频繁，等待固定窗口重置。
-- **需要迁移程序**：停止服务后整体复制程序目录，特别是 `data/muagents.db` 与 `data/keys/`，不要只复制数据库。
+- **需要迁移项目状态**：停止服务后复制整个 `.muagent/`，不要只复制数据库；不同项目不要共用同一个状态目录。
 
 ## 11. 安全建议
 
-- 不提交 `muagents.settings.local.json`，不在日志和文档中输出 API Key、密码或 JWT；
+- 不提交 `.muagent/`，不在日志和文档中输出 API Key、密码或 JWT；
 - 生产环境使用 HTTPS，并设置高强度随机 JWT 签名密钥；
-- 限制程序目录、SQLite 数据库和 `data/keys` 的操作系统访问权限；
+- 限制项目 `.muagent/`、SQLite 数据库和 `.muagent/data/keys` 的操作系统访问权限；
 - 仅配置必要的文件根目录、MCP 工具、Skill 运行时和 Web 服务；
 - 对允许执行脚本的部署使用低权限专用账户；
 - 备份时同时保存数据库和 Data Protection 密钥，并采用加密存储。

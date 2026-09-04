@@ -5,7 +5,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Mcp;
 
-/// <summary>把可动态修改的 MCP 服务配置持久化到程序根目录的 config/mcp.json。</summary>
+/// <summary>把可动态修改的 MCP 服务配置持久化到项目的 .muagent/config/mcp.json。</summary>
 public sealed class McpConfigurationStore
 {
     public const string RelativeConfigurationPath = "config/mcp.json";

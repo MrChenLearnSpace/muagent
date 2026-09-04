@@ -5,7 +5,7 @@ namespace MuAgents.Skills;
 /// <summary>Skill 发现目录、脚本策略、运行时白名单和内容上限。</summary>
 public sealed class SkillOptions
 {
-    /// <summary>Skill 根目录；相对路径以程序根目录为基准。</summary>
+    /// <summary>Skill 根目录；相对路径以启动时的项目根目录为基准。</summary>
     public List<string> Directories { get; set; } = ["skills"];
     /// <summary>全局脚本执行策略。</summary>
     public ScriptExecutionPolicy ScriptPolicy { get; set; } = ScriptExecutionPolicy.RequireApproval;

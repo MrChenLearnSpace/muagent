@@ -27,7 +27,7 @@ public sealed class ProcessScriptRunner(IOptions<SkillOptions> options) : IScrip
             (request.Skill.AllowedRuntimes.Count > 0 && !request.Skill.AllowedRuntimes.Contains(runtime, StringComparer.OrdinalIgnoreCase)))
             throw Security($"Script runtime '{runtime}' is not allowed.");
 
-        // 子进程工作目录和三种临时目录变量全部指向程序根目录，杜绝运行时回落到系统 Temp。
+        // 子进程工作目录位于 .muagent，临时目录变量也被固定，杜绝运行时回落到系统 Temp。
         var temporaryDirectory = RuntimePaths.CreateTemporaryDirectory("skills");
         try
         {

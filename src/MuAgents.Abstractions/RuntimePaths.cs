@@ -3,27 +3,34 @@ using System.Diagnostics;
 namespace MuAgents.Abstractions;
 
 /// <summary>
-/// 集中管理运行时可写路径。所有路径都以可执行文件目录为根，并拒绝任何逃逸到根目录外的写入。
+/// 集中管理项目级运行路径。启动时的当前目录是项目根目录，所有可写状态都进入其 .muagent 子目录。
 /// </summary>
 public static class RuntimePaths
 {
     private static int _processInitialized;
 
-    /// <summary>程序唯一运行根目录；使用 AppContext 而不是进程启动时的当前目录。</summary>
-    public static string RootDirectory { get; } = Path.GetFullPath(AppContext.BaseDirectory);
+    /// <summary>程序二进制所在目录，只用于读取随程序发布的默认配置和资源。</summary>
+    public static string ApplicationDirectory { get; } = Path.GetFullPath(AppContext.BaseDirectory);
+
+    /// <summary>启动命令所在的项目目录；文件引用和扩展相对路径均以此为基准。</summary>
+    public static string ProjectDirectory { get; } = Path.GetFullPath(Directory.GetCurrentDirectory());
+
+    /// <summary>项目的 MuAgent 状态根目录，即 &lt;项目目录&gt;/.muagent。</summary>
+    public static string RootDirectory { get; } = Path.Combine(ProjectDirectory, ".muagent");
 
     /// <summary>默认持久数据目录。</summary>
     public static string DataDirectory => ResolveWritePath("data", "runtime data directory");
 
     /// <summary>
     /// 在任何配置、HTTP 或文件组件启动前固定进程环境。除了当前工作目录，系统临时目录、
-    /// .NET CLI 主目录、NuGet 缓存和单文件解压目录也全部改到程序根目录内。
+    /// .NET CLI 主目录、NuGet 缓存和单文件解压目录也全部改到项目的 .muagent 内。
     /// </summary>
     public static void InitializeProcessEnvironment()
     {
         if (Interlocked.Exchange(ref _processInitialized, 1) != 0) return;
 
-        Directory.SetCurrentDirectory(RootDirectory);
+        Directory.CreateDirectory(RootDirectory);
+        Directory.SetCurrentDirectory(ProjectDirectory);
         var temporaryDirectory = EnsureDirectory(Path.Combine("data", "temp", "process"), "process temporary directory");
         var dotnetHome = EnsureDirectory(Path.Combine("data", "dotnet", "home"), ".NET CLI home directory");
         var nugetPackages = EnsureDirectory(Path.Combine("data", "nuget", "packages"), "NuGet packages directory");
@@ -58,7 +65,7 @@ public static class RuntimePaths
             ".NET bundle directory");
     }
 
-    /// <summary>把配置路径规范化为绝对路径，并验证结果仍位于程序根目录内。</summary>
+    /// <summary>把可写路径规范化为绝对路径，并验证结果仍位于项目的 .muagent 内。</summary>
     public static string ResolveWritePath(string configuredPath, string settingName)
     {
         if (string.IsNullOrWhiteSpace(configuredPath))
@@ -74,12 +81,12 @@ public static class RuntimePaths
         {
             throw new MuAgentException(
                 MuAgentErrorCategory.Configuration,
-                $"{settingName} must stay inside the application root '{RootDirectory}'.");
+                $"{settingName} must stay inside the project state root '{RootDirectory}'.");
         }
         return fullPath;
     }
 
-    /// <summary>在 data/temp/&lt;category&gt; 下创建具有随机名称的一次性目录。</summary>
+    /// <summary>在项目 .muagent/data/temp/&lt;category&gt; 下创建具有随机名称的一次性目录。</summary>
     public static RuntimeTemporaryDirectory CreateTemporaryDirectory(string category)
     {
         if (string.IsNullOrWhiteSpace(category) ||
@@ -111,7 +118,7 @@ public static class RuntimePaths
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 }
 
-/// <summary>表示程序根目录内的一次性工作目录，释放时递归清理其中内容。</summary>
+/// <summary>表示项目 .muagent 目录内的一次性工作目录，释放时递归清理其中内容。</summary>
 public sealed class RuntimeTemporaryDirectory(string directoryPath) : IDisposable
 {
     /// <summary>已经完成安全解析并创建的绝对目录。</summary>

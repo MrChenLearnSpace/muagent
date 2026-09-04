@@ -33,11 +33,11 @@ public sealed class ReadFileTool(
     {
         if (!arguments.TryGetProperty("path", out var value) || string.IsNullOrWhiteSpace(value.GetString()))
             return new ToolResult("path is required.", true);
-        var fullPath = Path.GetFullPath(value.GetString()!, RuntimePaths.RootDirectory);
+        var fullPath = Path.GetFullPath(value.GetString()!, RuntimePaths.ProjectDirectory);
         // 即使模型构造了 .. 路径，也必须先规范化，再用相对路径判断真实目录边界。
         var roots = _options.WorkspaceRoots.Count == 0
-            ? new[] { RuntimePaths.RootDirectory }
-            : _options.WorkspaceRoots.Select(root => Path.GetFullPath(root, RuntimePaths.RootDirectory));
+            ? new[] { RuntimePaths.ProjectDirectory }
+            : _options.WorkspaceRoots.Select(root => Path.GetFullPath(root, RuntimePaths.ProjectDirectory));
         if (!roots.Any(root => IsWithin(fullPath, root)))
             throw new MuAgentException(MuAgentErrorCategory.SecurityDenied, "File path is outside configured workspace roots.");
         var document = await readers.ReadAsync(

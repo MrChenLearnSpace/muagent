@@ -10,6 +10,7 @@
 out/
 
 .codex/
+.muagent/
 
 # .NET generated files
 *.dll

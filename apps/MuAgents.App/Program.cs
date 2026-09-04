@@ -18,15 +18,38 @@ using MuAgents.OpenAI;
 using MuAgents.Mcp;
 using MuAgents.Skills;
 
-// 在创建宿主前固定工作目录、临时目录和 .NET/NuGet 缓存，整个运行期只使用可执行文件目录。
+// 启动命令所在目录是项目根；所有运行状态和可写配置进入该项目的 .muagent。
 RuntimePaths.InitializeProcessEnvironment();
-var builder = WebApplication.CreateBuilder(args);
+var packagedSettingsPath = Path.Combine(RuntimePaths.ApplicationDirectory, "muagents.settings.json");
+var projectConfigurationDirectory = RuntimePaths.ResolveWritePath("config", "project configuration directory");
+var projectSettingsPath = RuntimePaths.ResolveWritePath(
+    Path.Combine("config", "muagents.settings.json"),
+    "project MuAgents settings path");
+Directory.CreateDirectory(projectConfigurationDirectory);
+// 每个项目首次启动时获得一份独立模板，之后升级程序不会覆盖项目自己的模型和认证配置。
+if (!File.Exists(projectSettingsPath)) File.Copy(packagedSettingsPath, projectSettingsPath);
+
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    // ASP.NET 的静态默认配置仍随二进制发布；项目覆盖配置从 .muagent/config 单独加载。
+    ContentRootPath = RuntimePaths.ApplicationDirectory
+});
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
-// 敏感配置使用可选的 local 文件覆盖模板；两者都按可执行文件位置查找，不依赖启动目录。
+// appsettings.json 是随程序发布的默认值；项目级覆盖和秘密只存在当前项目的 .muagent/config。
 builder.Configuration
-    .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "muagents.settings.json"), optional: false, reloadOnChange: true)
-    .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "muagents.settings.local.json"), optional: true, reloadOnChange: true);
+    .AddJsonFile(packagedSettingsPath, optional: false, reloadOnChange: false)
+    .AddJsonFile(
+        RuntimePaths.ResolveWritePath(
+            Path.Combine("config", "appsettings.json"),
+            "project appsettings path"),
+        optional: true,
+        reloadOnChange: true)
+    .AddJsonFile(projectSettingsPath, optional: false, reloadOnChange: true)
+    // 保持 ASP.NET Core 约定：环境变量和启动参数仍可覆盖项目文件。
+    .AddEnvironmentVariables()
+    .AddCommandLine(args);
 builder.Services.AddMuAgents(builder.Configuration);
 builder.Services.AddProblemDetails();
 var authenticationSection = builder.Configuration.GetSection("MuAgents:Authentication");
@@ -38,7 +61,7 @@ builder.Services.AddOptions<AuthenticationOptions>()
     .Validate(options => options.MinimumPasswordLength is >= 12 and <= 128, "Minimum password length must be 12-128.")
     .ValidateOnStart();
 builder.Services.Configure<PasswordHasherOptions>(options => options.IterationCount = 210_000);
-// Cookie 加密密钥需要持久化，但必须和数据库一样留在程序根目录内，保证目录整体可迁移。
+// Cookie 加密密钥需要持久化，但必须和数据库一样留在当前项目的 .muagent 内。
 var dataProtectionPath = RuntimePaths.ResolveWritePath(
     configuredAuthentication.DataProtectionKeysPath,
     "MuAgents:Authentication:DataProtectionKeysPath");

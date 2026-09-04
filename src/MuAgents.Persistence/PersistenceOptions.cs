@@ -3,7 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Persistence;
 
-/// <summary>SQLite 连接配置，并负责把文件型数据源约束到程序根目录。</summary>
+/// <summary>SQLite 连接配置，并负责把文件型数据源约束到项目的 .muagent 目录。</summary>
 public sealed class PersistenceOptions
 {
     /// <summary>SQLite 连接字符串；默认数据库位于 data/muagents.db。</summary>

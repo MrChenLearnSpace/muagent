@@ -9,7 +9,7 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 - 支持文本、Markdown、PDF、图片和 OCR 内容读取。
 - 支持本地工具、Web 搜索/抓取、MCP 服务及目录式 Skill。
 - CLI 支持文件引用、MCP/Skill 动态管理、上下文状态和手动压缩等斜杠命令。
-- API 与 CLI 都把可执行文件目录设为唯一根目录；SQLite、密钥、.NET/NuGet 缓存和临时文件不会写入 C 盘用户目录或系统临时目录。
+- 启动命令所在目录就是当前项目根目录；每个项目的配置、会话和缓存独立保存在自己的 `.muagent/` 中。
 - 暴露 `ActivitySource` 和 `Meter`，可接入 OpenTelemetry。
 
 ## 环境要求
@@ -20,14 +20,18 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 
 ## 快速开始
 
-1. 复制本地配置文件：
+1. 在准备使用 MuAgents 的项目根目录创建项目配置：
 
    ```powershell
+   Set-Location D:\work\my-project
+   New-Item -ItemType Directory -Force .muagent/config
    Copy-Item apps/MuAgents.App/muagents.settings.json `
-     apps/MuAgents.App/muagents.settings.local.json
+     .muagent/config/muagents.settings.json
    ```
 
-2. 编辑 `muagents.settings.local.json`。例如兼容 Responses API 的服务：
+   如果直接首次启动 API，也会自动复制这份模板；填写配置后重新启动即可。
+
+2. 编辑 `.muagent/config/muagents.settings.json`。例如兼容 Responses API 的服务：
 
    ```json
    {
@@ -48,7 +52,7 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 
    `BaseUrl` 必须包含 `http://` 或 `https://`。模型服务若不是 `/v1/responses` 路由，请相应调整 `BaseUrl`、`Endpoint` 和 `Protocol`。
 
-3. 启动 API：
+3. 保持终端位于项目根目录并启动 API：
 
    ```powershell
    dotnet run --project apps/MuAgents.App
@@ -85,31 +89,31 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 ```
 
 目录引用会递归处理，并自动跳过 `.git`、`bin`、`obj`、`data`、`node_modules`、本地密钥文件、二进制及超限文件。
-MCP 与 Skill 的增删和启停会立即持久化到程序根目录的 `config/mcp.json` 与 `config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。
+MCP 与 Skill 的增删和启停会立即持久化到当前项目的 `.muagent/config/mcp.json` 与 `.muagent/config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。
 
 ## 可移植目录约束
 
-程序启动后会把工作目录固定为 `AppContext.BaseDirectory`，也就是发布后可执行文件所在目录。所有可写数据必须位于这个目录之下：
+MuAgents 在进程最开始记录启动目录，并把它作为项目根目录。程序二进制可以安装在其他位置，但所有可写状态只进入当前项目的 `.muagent/`：
 
 ```text
-MuAgents.App/
-├─ MuAgents.App.exe
-├─ appsettings.json
-├─ muagents.settings.json
-├─ muagents.settings.local.json   # 本地敏感配置，不提交 Git
-├─ config/
-│  ├─ mcp.json                    # MCP 服务及启停状态
-│  └─ skills.json                 # Skill 扫描目录及禁用清单
-├─ data/
-│  ├─ muagents.db                 # 会话、身份和租户数据
-│  ├─ keys/                       # ASP.NET Core Data Protection 密钥
-│  ├─ temp/                       # 主进程、PDF、OCR、MCP 等临时文件
-│  ├─ dotnet/                     # 子进程的 .NET CLI 主目录
-│  └─ nuget/                      # 子进程的 NuGet 包与 HTTP 缓存
-└─ skills/                        # Skill 目录及脚本
+my-project/                       # 启动 API/CLI 时所在目录
+├─ .muagent/                      # 本项目独立状态，已加入 .gitignore
+│  ├─ config/
+│  │  ├─ muagents.settings.json  # 模型、认证和 Web 配置
+│  │  ├─ appsettings.json        # 可选的运行参数覆盖
+│  │  ├─ mcp.json                # MCP 服务及启停状态
+│  │  └─ skills.json             # Skill 扫描目录及禁用清单
+│  └─ data/
+│     ├─ muagents.db             # 会话、身份和租户数据
+│     ├─ keys/                   # ASP.NET Core Data Protection 密钥
+│     ├─ temp/                   # 主进程和扩展临时文件
+│     ├─ dotnet/                 # 子进程的 .NET CLI 主目录
+│     └─ nuget/                  # 子进程的 NuGet 缓存
+├─ skills/                        # 项目 Skill，默认从这里发现
+└─ ...                            # 项目源码和其他文件
 ```
 
-API、CLI、MCP、OCR、内容处理和 Skill 脚本都会继承这条规则。`TEMP`、`TMP`、`TMPDIR`、`DOTNET_CLI_HOME`、`NUGET_PACKAGES`、`NUGET_HTTP_CACHE_PATH` 与 `DOTNET_BUNDLE_EXTRACT_BASE_DIR` 在进程启动时被重定向到 `data/`。相对读写路径基于程序根目录解析；指向根目录外部的写入路径会被拒绝。`data/keys` 中的便携式密钥没有绑定 Windows DPAPI，部署时应使用操作系统权限限制访问。
+`/add .`、文件读取、图片和 Skill/MCP 相对路径以项目根目录解析；数据库、密钥、配置、临时目录和运行时缓存以 `.muagent/` 解析。所有可写路径如果逃逸 `.muagent/` 都会被拒绝。`TEMP`、`TMP`、`DOTNET_CLI_HOME` 和 NuGet 等缓存变量也会重定向到 `.muagent/data/`。
 
 ## 文档
 
@@ -124,4 +128,4 @@ dotnet build MuAgents.sln -c Release
 dotnet test MuAgents.sln -c Release --no-build
 ```
 
-本地配置 `muagents.settings.local.json`、运行数据 `data/`、构建输出 `bin/` 和 `obj/` 均不应提交到版本库。
+项目状态目录 `.muagent/`、构建输出 `bin/` 和 `obj/` 均不应提交到版本库。

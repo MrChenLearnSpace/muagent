@@ -4,10 +4,10 @@ using System.Text.Json;
 using MuAgents.Abstractions;
 
 // CLI 只负责认证和呈现流；会话、工具和模型状态始终由 API 服务维护。
-// 与 API 使用同一条便携路径规则，/add . 和所有相对路径都从 CLI 可执行文件目录开始。
+// 与 API 使用同一条项目隔离规则：启动目录是项目根，运行状态进入该目录的 .muagent。
 RuntimePaths.InitializeProcessEnvironment();
 var options = CliOptions.Parse(args);
-var references = new FileReferenceSet(RuntimePaths.RootDirectory);
+var references = new FileReferenceSet(RuntimePaths.ProjectDirectory);
 using var client = new HttpClient { BaseAddress = new Uri(options.Url) };
 Console.Write($"Password for {options.UserName}: ");
 var password = ReadPassword();
@@ -67,7 +67,8 @@ while (true)
                 Console.WriteLine($"用户/租户: {loggedInUser} / {loggedInTenant}");
                 Console.WriteLine($"会话: {conversationId}");
                 Console.WriteLine($"引用: {references.Count} 个文件，{references.TotalBytes} UTF-8 字节");
-                Console.WriteLine($"CLI 程序根目录: {references.RootDirectory}");
+                Console.WriteLine($"项目根目录: {references.RootDirectory}");
+                Console.WriteLine($"MuAgent 状态目录: {RuntimePaths.RootDirectory}");
                 Console.WriteLine($"运行临时目录: {Environment.GetEnvironmentVariable("TEMP")}");
                 await PrintContextStatusAsync(client, conversationId);
                 break;

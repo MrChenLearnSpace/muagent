@@ -16,7 +16,7 @@ public sealed class ContentReaderRegistry(
         ReadOptions options,
         CancellationToken cancellationToken = default)
     {
-        var fullPath = Path.GetFullPath(content.Source, RuntimePaths.RootDirectory);
+        var fullPath = Path.GetFullPath(content.Source, RuntimePaths.ProjectDirectory);
         var file = new FileInfo(fullPath);
         if (!file.Exists) throw new FileNotFoundException("Content file was not found.", fullPath);
         if (file.Length > _options.MaxFileBytes)

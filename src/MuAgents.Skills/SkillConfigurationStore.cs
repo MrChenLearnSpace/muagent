@@ -11,7 +11,7 @@ public sealed class SkillRuntimeConfiguration
     public List<string> DisabledSkills { get; set; } = [];
 }
 
-/// <summary>把 Skill 启停和目录配置持久化到程序根目录的 config/skills.json。</summary>
+/// <summary>把 Skill 启停和目录配置持久化到项目的 .muagent/config/skills.json。</summary>
 public sealed class SkillConfigurationStore
 {
     public const string RelativeConfigurationPath = "config/skills.json";
@@ -109,9 +109,9 @@ public sealed class SkillConfigurationStore
     private string NormalizeDirectory(string path, bool requireExists)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Skill directory is required.", nameof(path));
-        var fullPath = Path.GetFullPath(path.Trim().Trim('"'), RuntimePaths.RootDirectory);
+        var fullPath = Path.GetFullPath(path.Trim().Trim('"'), RuntimePaths.ProjectDirectory);
         if (requireExists && !Directory.Exists(fullPath)) throw new DirectoryNotFoundException(fullPath);
-        var relative = Path.GetRelativePath(RuntimePaths.RootDirectory, fullPath);
+        var relative = Path.GetRelativePath(RuntimePaths.ProjectDirectory, fullPath);
         return !Path.IsPathRooted(relative) && relative != ".." &&
                !relative.StartsWith($"..{Path.DirectorySeparatorChar}", PathComparison)
             ? relative
@@ -119,8 +119,8 @@ public sealed class SkillConfigurationStore
     }
 
     private static bool SameDirectory(string left, string right) =>
-        Path.GetFullPath(left, RuntimePaths.RootDirectory)
-            .Equals(Path.GetFullPath(right, RuntimePaths.RootDirectory), PathComparison);
+        Path.GetFullPath(left, RuntimePaths.ProjectDirectory)
+            .Equals(Path.GetFullPath(right, RuntimePaths.ProjectDirectory), PathComparison);
 
     private void SaveUnsafe()
     {

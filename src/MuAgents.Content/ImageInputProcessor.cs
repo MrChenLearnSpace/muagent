@@ -11,7 +11,7 @@ public sealed class ImageOptions
     public long MaxImageBytes { get; set; } = 10 * 1024 * 1024;
     /// <summary>宽乘高允许的最大像素数，用于限制解码资源消耗。</summary>
     public long MaxPixels { get; set; } = 40_000_000;
-    /// <summary>允许引用图片文件的根目录；为空时仅允许程序根目录。</summary>
+    /// <summary>允许引用图片文件的根目录；为空时仅允许当前项目目录。</summary>
     public List<string> AllowedRoots { get; set; } = [];
 }
 
@@ -68,11 +68,11 @@ public sealed class ImageInputProcessor(IOptions<ImageOptions> options) : IImage
 
     private string ResolveAllowedPath(string value)
     {
-        var path = Path.GetFullPath(value, RuntimePaths.RootDirectory);
-        // 空白名单不是“允许全部”；默认安全边界是已被宿主固定的程序根目录。
+        var path = Path.GetFullPath(value, RuntimePaths.ProjectDirectory);
+        // 空白名单不是“允许全部”；默认安全边界是启动 MuAgents 的项目目录。
         var roots = _options.AllowedRoots.Count == 0
-            ? new[] { RuntimePaths.RootDirectory }
-            : _options.AllowedRoots.Select(root => Path.GetFullPath(root, RuntimePaths.RootDirectory));
+            ? new[] { RuntimePaths.ProjectDirectory }
+            : _options.AllowedRoots.Select(root => Path.GetFullPath(root, RuntimePaths.ProjectDirectory));
         if (!roots.Any(root => IsWithin(path, root))) throw Security("Image path is outside configured roots.");
         return path;
     }

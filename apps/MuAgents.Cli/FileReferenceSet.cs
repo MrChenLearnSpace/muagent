@@ -18,12 +18,12 @@ public sealed class FileReferenceSet
 
     private static readonly HashSet<string> ExcludedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", ".svn", ".hg", ".vs", ".idea", "bin", "obj", "node_modules", "data"
+        ".git", ".muagent", ".svn", ".hg", ".vs", ".idea", "bin", "obj", "node_modules", "data"
     };
 
     private static readonly HashSet<string> ExcludedFileNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".env", "muagents.settings.local.json"
+        ".env", "muagents.settings.json", "muagents.settings.local.json"
     };
 
     private static readonly HashSet<string> ExcludedExtensions = new(StringComparer.OrdinalIgnoreCase)

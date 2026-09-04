@@ -23,11 +23,11 @@ public sealed partial class FileSystemSkillCatalog(
     public async Task<IReadOnlyList<SkillCatalogEntry>> DiscoverAllAsync(CancellationToken cancellationToken = default)
     {
         var skills = new Dictionary<string, SkillManifest>(StringComparer.OrdinalIgnoreCase);
-        // 相对目录基于宿主已固定的程序根目录，因此默认 skills 不会随启动终端位置漂移。
+        // Skill 是项目内容：相对目录基于启动时的项目根目录，启停配置则另存于 .muagent。
         var settings = configuration.Snapshot();
         foreach (var configuredDirectory in settings.Directories)
         {
-            var root = Path.GetFullPath(configuredDirectory, RuntimePaths.RootDirectory);
+            var root = Path.GetFullPath(configuredDirectory, RuntimePaths.ProjectDirectory);
             if (!Directory.Exists(root)) continue;
             var directories = File.Exists(Path.Combine(root, "SKILL.md"))
                 ? new[] { root }
