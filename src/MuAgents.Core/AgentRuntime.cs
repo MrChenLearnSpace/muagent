@@ -12,12 +12,14 @@ namespace MuAgents.Core;
 public sealed class AgentOptions
 {
     public int MaxToolIterations { get; set; } = 24;
+    /// <summary>模型成功响应但没有正文或工具调用时的重试次数，避免把空流误报为正常回答。</summary>
+    public int MaxEmptyResponseRetries { get; set; } = 2;
     /// <summary>
     /// 所有会话都会收到的可信代理规则。调用方的自定义 SystemInstruction 会附加在其后，
     /// 不能意外移除“编码任务必须实际落地”的默认行为。
     /// </summary>
     public string DefaultSystemInstruction { get; set; } = """
-        You are MuAgent, an agent that works directly in the current project.
+        You are MuAgent, an agent that works directly in the current project. Treat the supplied conversation history as authoritative: resolve references such as "刚才", "继续", "那个文件", and "原来的功能" from earlier user messages, assistant actions, and tool results instead of treating each message as a new conversation.
         When the user asks you to create, modify, fix, build, or test software, use the available tools to perform the work in the project. First inspect relevant files with local.list_files and local.read_file, write complete file contents with local.write_file, and validate the result with local.execute_command when execution is permitted. Do not merely paste proposed code into chat when the user asked for a working project. Continue through tool results, correct failures when possible, and only give the final concise summary after the requested files and validation are complete. Never claim that a file was created or changed unless a successful tool result confirms it. All writable environment and temporary paths are already isolated under the project's .muagent directory: never override those environment variables or create/write paths outside the project. Invoke executables directly and only use a shell wrapper when the requested operation genuinely requires shell syntax. If a required mutation is denied by host policy, state the exact blocked tool or policy instead of pretending the work was completed.
         """;
 }
@@ -116,12 +118,24 @@ public sealed class AgentRuntime(
                 cancellationToken).ConfigureAwait(false);
 
             // 每次工具结果落库后重新读取历史，使下一次模型调用看到完整且权威的消息顺序。
+            var emptyResponseAttempts = 0;
             for (var iteration = 0; iteration < _options.MaxToolIterations; iteration++)
             {
-                var history = await conversations.GetMessagesAsync(
+                var storedHistory = await conversations.GetMessagesAsync(
                     request.TenantId,
                     request.ConversationId,
                     cancellationToken).ConfigureAwait(false);
+                var history = RemoveOrphanedToolParts(storedHistory, out var removedOrphans);
+                if (removedOrphans > 0)
+                {
+                    // 兼容旧版本留下的悬空调用。持久化修复后，重启及后续轮次都使用合法历史。
+                    await conversations.ReplaceMessagesAsync(
+                        request.TenantId,
+                        request.ConversationId,
+                        history,
+                        cancellationToken).ConfigureAwait(false);
+                    yield return new WarningEvent($"Repaired {removedOrphans} orphaned tool history part(s) from this conversation.");
+                }
                 var plan = contextManager.Prepare(history, tools.Definitions, parameters);
                 if (plan.WasCompacted)
                 {
@@ -176,6 +190,23 @@ public sealed class AgentRuntime(
                             break;
                     }
                 }
+
+                if (text.Length == 0 && calls.Count == 0)
+                {
+                    emptyResponseAttempts++;
+                    if (emptyResponseAttempts <= _options.MaxEmptyResponseRetries)
+                    {
+                        yield return new WarningEvent(
+                            $"Model returned an empty response; retrying ({emptyResponseAttempts}/{_options.MaxEmptyResponseRetries}).");
+                        iteration--;
+                        continue;
+                    }
+
+                    throw new MuAgentException(
+                        MuAgentErrorCategory.InvalidModelResponse,
+                        $"Model returned an empty response after {_options.MaxEmptyResponseRetries} retries.");
+                }
+                emptyResponseAttempts = 0;
 
                 var parts = new List<MessagePart>();
                 if (text.Length > 0)
@@ -328,6 +359,35 @@ public sealed class AgentRuntime(
             parameters.SystemInstruction
         }.Where(value => !string.IsNullOrWhiteSpace(value)))
     };
+
+    private static IReadOnlyList<AgentMessage> RemoveOrphanedToolParts(
+        IReadOnlyList<AgentMessage> messages,
+        out int removedCount)
+    {
+        var callIds = messages.SelectMany(message => message.Parts).OfType<ToolCallPart>()
+            .Select(part => part.CallId).ToHashSet(StringComparer.Ordinal);
+        var resultIds = messages.SelectMany(message => message.Parts).OfType<ToolResultPart>()
+            .Select(part => part.CallId).ToHashSet(StringComparer.Ordinal);
+        var removed = 0;
+        var normalized = new List<AgentMessage>(messages.Count);
+        foreach (var message in messages)
+        {
+            var parts = message.Parts.Where(part =>
+            {
+                var keep = part switch
+                {
+                    ToolCallPart call => resultIds.Contains(call.CallId),
+                    ToolResultPart result => callIds.Contains(result.CallId),
+                    _ => true
+                };
+                if (!keep) removed++;
+                return keep;
+            }).ToArray();
+            if (parts.Length > 0) normalized.Add(message with { Parts = parts });
+        }
+        removedCount = removed;
+        return removed == 0 ? messages : normalized;
+    }
 
     private static string? BuildClientVisibleArguments(ToolInvocation call)
     {

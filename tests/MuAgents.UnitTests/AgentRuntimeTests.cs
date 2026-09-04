@@ -83,7 +83,7 @@ public sealed class AgentRuntimeTests
         var model = new DelegateChatModel((request, _) =>
         {
             captured = request;
-            return DelegateChatModel.FromEvents([new ModelCompleted("stop")]);
+            return DelegateChatModel.FromEvents([new ModelTextDelta("done"), new ModelCompleted("stop")]);
         });
         var runtime = new AgentRuntime(
             model,
@@ -130,6 +130,73 @@ public sealed class AgentRuntimeTests
             part => part is ToolResultPart { CallId: "last-call" });
         Assert.Contains(events, item => item is CompletedEvent { FinishReason: "max_tool_iterations" });
     }
+
+    [Fact]
+    public async Task RunAsync_EmptyModelResponse_RetriesInsteadOfCompletingWithBlankAnswer()
+    {
+        var store = new MemoryConversationStore();
+        var conversation = await store.CreateAsync("tenant", "user", null);
+        var attempts = 0;
+        var model = new DelegateChatModel((_, _) => ++attempts == 1
+            ? DelegateChatModel.FromEvents([new ModelCompleted("completed")])
+            : DelegateChatModel.FromEvents([new ModelTextDelta("answer"), new ModelCompleted("completed")]));
+        var runtime = CreateRuntime(model, store, new AgentOptions { MaxEmptyResponseRetries = 2 });
+
+        var events = new List<AgentEvent>();
+        await foreach (var item in runtime.RunAsync(new AgentRunRequest(
+                           "tenant", "user", conversation.Id, "remember me", new ModelParameters("test"))))
+            events.Add(item);
+
+        Assert.Equal(2, attempts);
+        Assert.Contains(events, item => item is WarningEvent { Message: var message } && message.Contains("empty response"));
+        Assert.Contains(events, item => item is TextDeltaEvent { Delta: "answer" });
+    }
+
+    [Fact]
+    public async Task RunAsync_RepairsLegacyOrphanedToolCallAndKeepsUserHistory()
+    {
+        var store = new MemoryConversationStore();
+        var conversation = await store.CreateAsync("tenant", "user", null);
+        await store.AppendMessageAsync("tenant", conversation.Id, AgentMessage.Text(AgentRole.User, "create counter"));
+        await store.AppendMessageAsync("tenant", conversation.Id, new AgentMessage(
+            "legacy-call", AgentRole.Assistant,
+            [new TextPart("starting"), new ToolCallPart("orphan", "local.write_file", "{}")],
+            DateTimeOffset.UtcNow));
+        AgentRequest? captured = null;
+        var model = new DelegateChatModel((request, _) =>
+        {
+            captured = request;
+            return DelegateChatModel.FromEvents([new ModelTextDelta("continued"), new ModelCompleted("completed")]);
+        });
+        var runtime = CreateRuntime(model, store, new AgentOptions());
+
+        var events = new List<AgentEvent>();
+        await foreach (var item in runtime.RunAsync(new AgentRunRequest(
+                           "tenant", "user", conversation.Id, "continue it", new ModelParameters("test"))))
+            events.Add(item);
+
+        Assert.NotNull(captured);
+        Assert.Contains(captured.Messages.SelectMany(message => message.Parts).OfType<TextPart>(),
+            part => part.Text == "create counter");
+        Assert.DoesNotContain(captured.Messages.SelectMany(message => message.Parts),
+            part => part is ToolCallPart { CallId: "orphan" });
+        var persisted = await store.GetMessagesAsync("tenant", conversation.Id);
+        Assert.DoesNotContain(persisted.SelectMany(message => message.Parts),
+            part => part is ToolCallPart { CallId: "orphan" });
+        Assert.Contains(events, item => item is WarningEvent { Message: var message } && message.Contains("Repaired"));
+    }
+
+    private static AgentRuntime CreateRuntime(
+        IChatModel model,
+        IConversationStore store,
+        AgentOptions options) => new(
+        model,
+        new FakeGateway(),
+        store,
+        new ContextManager(new ApproximateTokenEstimator(), Options.Create(new ContextOptions())),
+        Options.Create(options),
+        Options.Create(new ContextOptions()),
+        NullLogger<AgentRuntime>.Instance);
 
     private static async IAsyncEnumerable<ModelEvent> Complete(
         int invocation,

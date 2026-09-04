@@ -28,6 +28,8 @@ public static class ServiceCollectionExtensions
             .Bind(section.GetSection("Agent"))
             .Validate(options => options.MaxToolIterations is >= 1 and <= 100,
                 "MaxToolIterations must be between 1 and 100.")
+            .Validate(options => options.MaxEmptyResponseRetries is >= 0 and <= 10,
+                "MaxEmptyResponseRetries must be between 0 and 10.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.DefaultSystemInstruction) &&
                                  options.DefaultSystemInstruction.Length <= 20_000,
                 "DefaultSystemInstruction must contain 1-20000 characters.")

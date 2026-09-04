@@ -78,4 +78,40 @@ public sealed class ContextManagerTests
 
         Assert.Equal(MuAgentErrorCategory.ContentFailure, exception.Category);
     }
+
+    [Fact]
+    public void Prepare_KeepsCompleteRecentUserTurnIncludingAllToolMessages()
+    {
+        var manager = new ContextManager(
+            new ApproximateTokenEstimator(),
+            Options.Create(new ContextOptions
+            {
+                MaxContextTokens = 2_000,
+                ReservedOutputTokens = 100,
+                SafetyMarginTokens = 50,
+                CompactionRatio = 0.5,
+                RecentTurnsToKeep = 1
+            }));
+        var messages = new List<AgentMessage>
+        {
+            AgentMessage.Text(AgentRole.User, new string('o', 2_000)),
+            AgentMessage.Text(AgentRole.Assistant, new string('a', 2_000)),
+            AgentMessage.Text(AgentRole.User, "modify the previous project")
+        };
+        for (var index = 0; index < 6; index++)
+        {
+            messages.Add(new AgentMessage($"call-{index}", AgentRole.Assistant,
+                [new ToolCallPart($"tool-{index}", "local.write_file", "{\"path\":\"file.txt\"}")], DateTimeOffset.UtcNow));
+            messages.Add(new AgentMessage($"result-{index}", AgentRole.Tool,
+                [new ToolResultPart($"tool-{index}", "written", false)], DateTimeOffset.UtcNow));
+        }
+
+        var plan = manager.Prepare(messages, [], new ModelParameters("test"));
+
+        Assert.True(plan.WasCompacted);
+        var recent = plan.Messages.SkipWhile(message => message.Role == AgentRole.System).ToArray();
+        Assert.Equal("modify the previous project", Assert.IsType<TextPart>(recent[0].Parts[0]).Text);
+        Assert.Equal(6, recent.SelectMany(message => message.Parts).OfType<ToolCallPart>().Count());
+        Assert.Equal(6, recent.SelectMany(message => message.Parts).OfType<ToolResultPart>().Count());
+    }
 }

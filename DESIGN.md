@@ -260,7 +260,7 @@ public sealed record AgentRequest(
 - `UsageUpdated`
 - `Warning` / `Error` / `Completed`
 
-每轮必须接受 `CancellationToken`。配置 `MaxToolIterations`（默认 24），防止模型无限调用工具。到达上限时必须先执行并持久化已经保存的工具调用结果，再结束本轮，禁止把没有对应 `ToolResultPart` 的悬空调用留给下一轮上下文。
+每轮必须接受 `CancellationToken`。配置 `MaxToolIterations`（默认 24），防止模型无限调用工具。到达上限时必须先执行并持久化已经保存的工具调用结果，再结束本轮，禁止把没有对应 `ToolResultPart` 的悬空调用留给下一轮上下文。加载旧会话时自动移除不成对的工具部分但保留普通消息；模型返回空事件流时按 `MaxEmptyResponseRetries` 重试，不能将空白标记为成功回答。
 
 ## 7. 模型与协议兼容层
 
@@ -501,6 +501,7 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
   "MuAgents": {
     "Agent": {
       "MaxToolIterations": 24,
+      "MaxEmptyResponseRetries": 2,
       "ToolTimeoutSeconds": 60
     },
     "Model": {

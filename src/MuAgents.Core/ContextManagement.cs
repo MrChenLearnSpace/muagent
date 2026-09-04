@@ -135,12 +135,13 @@ public sealed class ContextManager(
             return new ContextPlan(messages, estimated, false, estimated);
         }
 
-        var keepCount = Math.Max(2, _options.RecentTurnsToKeep * 2);
-        // 系统消息决定行为，不能被摘要替换；最近轮次保留原文以维持工具调用和指代的准确性。
+        // “轮次”按用户消息划分，而不是假设每轮只有 user/assistant 两条消息。编码任务的一轮通常包含
+        // 多组 assistant tool-call / tool-result；按固定消息数截断会拆散工具对并丢掉该轮用户需求。
         var stableSystem = messages.Where(x => x.Role == AgentRole.System).ToArray();
         var nonSystem = messages.Where(x => x.Role != AgentRole.System).ToArray();
-        var recent = nonSystem.TakeLast(keepCount).ToArray();
-        var older = nonSystem.SkipLast(Math.Min(keepCount, nonSystem.Length)).ToArray();
+        var recentStart = FindRecentTurnStart(nonSystem, _options.RecentTurnsToKeep);
+        var recent = nonSystem.Skip(recentStart).ToArray();
+        var older = nonSystem.Take(recentStart).ToArray();
         var checkpoint = CreateCheckpoint(older);
         var compacted = stableSystem
             .Concat([checkpoint])
@@ -216,6 +217,18 @@ public sealed class ContextManager(
                 ["kind"] = "compaction-checkpoint",
                 ["sourceMessageIds"] = string.Join(',', messages.Select(x => x.Id))
             }));
+    }
+
+    private static int FindRecentTurnStart(IReadOnlyList<AgentMessage> messages, int turnsToKeep)
+    {
+        var usersSeen = 0;
+        for (var index = messages.Count - 1; index >= 0; index--)
+        {
+            if (messages[index].Role != AgentRole.User) continue;
+            usersSeen++;
+            if (usersSeen == turnsToKeep) return index;
+        }
+        return 0;
     }
 
     private static string DescribePart(MessagePart part) => part switch

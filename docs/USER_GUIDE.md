@@ -92,6 +92,7 @@ API 应用按以下顺序加载 JSON 配置：
 
 - `MuAgents:Persistence:ConnectionString`：默认 `Data Source=data/muagents.db`；实际保存为 `.muagent/data/muagents.db`。
 - `MuAgents:Agent:MaxToolIterations`：单轮最多工具迭代次数，默认 24。达到上限时会先完成并保存最后一批工具结果，避免留下破坏后续上下文的悬空调用。
+- `MuAgents:Agent:MaxEmptyResponseRetries`：模型返回成功状态但没有正文和工具调用时的重试次数，默认 2；超过次数后明确返回模型响应错误，不把空白当作正常回答。
 - `MuAgents:Agent:ToolTimeoutSeconds`：一次工具调用超时，默认 60 秒。
 - `MuAgents:Agent:MaxConcurrency`：同一批工具调用并发数，默认 4。
 - `MuAgents:CommandExecution:ApprovalMode`：控制台执行审批模式，默认 `RequireApproval`。
@@ -372,6 +373,8 @@ Content-Type: application/json
 ## 6. 会话 API
 
 `GET /api/v1/conversations?limit=20` 按更新时间倒序返回当前认证用户在当前租户创建的会话。CLI 使用 `limit=1` 恢复最近会话，因此进程重启后仍会把原有消息和工具结果作为上下文发送给模型。
+
+每次发送前，运行时还会检查工具调用与工具结果是否成对。旧版本异常中断或达到迭代上限留下的孤立记录会被从持久化历史中移除，但普通用户消息和助手正文会保留；这样“继续”“修改刚才的文件”等指代不会被不合法的协议历史遮断。
 
 ### 6.1 创建会话
 
