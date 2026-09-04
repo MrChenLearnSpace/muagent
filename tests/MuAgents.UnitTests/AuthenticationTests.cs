@@ -56,6 +56,51 @@ public sealed class AuthenticationTests
     }
 
     [Fact]
+    public async Task PasswordlessBootstrapStopsWorkingAfterLocalPasswordReset()
+    {
+        var database = TestPaths.NewFile(".db");
+        try
+        {
+            var store = new SqliteIdentityStore(Options.Create(new PersistenceOptions
+            {
+                ConnectionString = $"Data Source={database};Pooling=False"
+            }));
+            var authentication = new LocalAuthenticationService(
+                store,
+                new PasswordHasher<UserAccount>(Options.Create(new PasswordHasherOptions())),
+                Options.Create(new AuthenticationOptions
+                {
+                    JwtSigningKey = "test-signing-key-with-at-least-32-characters",
+                    MinimumPasswordLength = 12
+                }));
+
+            var bootstrap = await authentication.BootstrapAsync(
+                "admin", string.Empty, "Local", CancellationToken.None);
+            Assert.NotNull(await authentication.LoginAsync(
+                "admin", string.Empty, bootstrap.Membership.TenantId,
+                "127.0.0.1", CancellationToken.None));
+            Assert.Null(await authentication.LoginAsync(
+                "admin", "any-non-empty-password", bootstrap.Membership.TenantId,
+                "127.0.0.1", CancellationToken.None));
+
+            await authentication.ResetPasswordAsync(
+                "admin", "new secure password", CancellationToken.None);
+
+            Assert.Null(await authentication.LoginAsync(
+                "admin", string.Empty, bootstrap.Membership.TenantId,
+                "127.0.0.1", CancellationToken.None));
+            Assert.NotNull(await authentication.LoginAsync(
+                "admin", "new secure password", bootstrap.Membership.TenantId,
+                "127.0.0.1", CancellationToken.None));
+        }
+        finally
+        {
+            foreach (var path in new[] { database, database + "-wal", database + "-shm" })
+                if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task SystemAdministratorCanProvisionUsersTenantsAndMemberships()
     {
         var database = TestPaths.NewFile(".db");

@@ -46,6 +46,18 @@ public static class ServiceCollectionExtensions
             var seconds = section.GetSection("Agent").GetValue<int?>("ToolTimeoutSeconds");
             if (seconds is > 0) options.Timeout = TimeSpan.FromSeconds(seconds.Value);
         });
+        services.AddOptions<CommandExecutionOptions>()
+            .Bind(section.GetSection("CommandExecution"))
+            .Validate(options => options.MaxExecutionSeconds is >= 1 and <= 3600,
+                "Command execution timeout must be between 1 and 3600 seconds.")
+            .Validate(options => options.ApprovalTimeoutSeconds is >= 1 and <= 3600,
+                "Command approval timeout must be between 1 and 3600 seconds.")
+            .Validate(options => options.MaxOutputCharacters > 0,
+                "Command execution output limit must be positive.")
+            .Validate(options => options.AllowedCommands.All(command =>
+                    !string.IsNullOrWhiteSpace(command) && command.Length <= 1_024),
+                "Allowed command entries must contain 1-1024 characters.")
+            .ValidateOnStart();
         services.AddOptions<OpenAiCompatibleOptions>()
             .Bind(section.GetSection("Model"))
             .Validate(options => Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out _),
@@ -76,6 +88,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITokenEstimator, ApproximateTokenEstimator>();
         services.AddSingleton<IContextManager, ContextManager>();
         services.AddSingleton<IAgentTool, CurrentTimeTool>();
+        services.AddSingleton<CommandApprovalCoordinator>();
+        services.AddSingleton<IAgentTool, CommandExecutionTool>();
         services.AddSingleton<IToolGateway, ToolGateway>();
         services.AddSingleton<IConversationStore, SqliteConversationStore>();
         services.AddSingleton<IIdentityStore, SqliteIdentityStore>();

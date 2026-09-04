@@ -39,9 +39,24 @@ public sealed class ToolGatewayTests
         Assert.StartsWith("abcd", results[0].Result.Content);
     }
 
+    [Fact]
+    public async Task InvokeAsync_PassesExactCallIdToToolContext()
+    {
+        var tool = new RecordingTool();
+        var gateway = new ToolGateway(
+            [tool], Options.Create(new ToolGatewayOptions()), NullLogger<ToolGateway>.Instance);
+
+        await gateway.InvokeAsync(
+            [new ToolInvocation("approval-call-42", "test.record", "{}")],
+            new ToolExecutionContext("tenant", "conversation", "user"));
+
+        Assert.Equal("approval-call-42", tool.ToolCallId);
+    }
+
     private sealed class RecordingTool : IAgentTool
     {
         public bool WasCalled { get; private set; }
+        public string? ToolCallId { get; private set; }
         public ToolDefinition Definition { get; } = new(
             "test.record", "test", JsonDocument.Parse("{\"type\":\"object\"}").RootElement.Clone());
 
@@ -51,6 +66,7 @@ public sealed class ToolGatewayTests
             CancellationToken cancellationToken = default)
         {
             WasCalled = true;
+            ToolCallId = context.ToolCallId;
             return Task.FromResult(new ToolResult("abcdefgh"));
         }
     }

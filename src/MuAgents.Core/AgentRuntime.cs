@@ -30,7 +30,7 @@ public sealed record TextDeltaEvent(string Delta) : AgentEvent;
 /// <summary>供应商公开的推理增量。</summary>
 public sealed record ReasoningDeltaEvent(string Delta) : AgentEvent;
 /// <summary>工具即将执行。</summary>
-public sealed record ToolCallStartedEvent(string CallId, string Name) : AgentEvent;
+public sealed record ToolCallStartedEvent(string CallId, string Name, string? ArgumentsJson = null) : AgentEvent;
 /// <summary>工具执行结束及结果状态。</summary>
 public sealed record ToolCallCompletedEvent(string CallId, string Name, bool IsError, long DurationMilliseconds) : AgentEvent;
 /// <summary>上下文压缩开始，携带压缩前估算量。</summary>
@@ -207,7 +207,11 @@ public sealed class AgentRuntime(
 
                 foreach (var call in calls)
                 {
-                    yield return new ToolCallStartedEvent(call.CallId, call.Name);
+                    // 只有控制台工具公开参数，供审批客户端展示；其他工具参数可能含敏感业务数据。
+                    yield return new ToolCallStartedEvent(
+                        call.CallId,
+                        call.Name,
+                        call.Name == "local.execute_command" ? call.ArgumentsJson : null);
                 }
 
                 // 网关内部负责并发上限与超时；这里按返回顺序逐条落库并发出完成事件。

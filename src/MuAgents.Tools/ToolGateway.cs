@@ -97,10 +97,12 @@ public sealed class ToolGateway : IToolGateway
         using (arguments)
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
-            timeout.CancelAfter(_options.Timeout);
+            if (tool is not IManagesOwnToolTimeout) timeout.CancelAfter(_options.Timeout);
             try
             {
-                var result = await tool.InvokeAsync(arguments.RootElement, context, timeout.Token)
+                // 工具获得本次精确调用 ID；审批协调器据此把用户决定绑定到唯一调用。
+                var callContext = context with { ToolCallId = call.CallId };
+                var result = await tool.InvokeAsync(arguments.RootElement, callContext, timeout.Token)
                     .ConfigureAwait(false);
                 return Finish(Limit(result));
             }

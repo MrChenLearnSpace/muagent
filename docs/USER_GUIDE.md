@@ -94,6 +94,10 @@ API 应用按以下顺序加载 JSON 配置：
 - `MuAgents:Agent:MaxToolIterations`：单轮最多工具迭代次数，默认 12。
 - `MuAgents:Agent:ToolTimeoutSeconds`：一次工具调用超时，默认 60 秒。
 - `MuAgents:Agent:MaxConcurrency`：同一批工具调用并发数，默认 4。
+- `MuAgents:CommandExecution:ApprovalMode`：控制台执行审批模式，默认 `RequireApproval`。
+- `MuAgents:CommandExecution:AllowedCommands`：可执行程序白名单；空数组表示不额外限制。
+- `MuAgents:CommandExecution:ApprovalTimeoutSeconds`：等待用户审批的最长时间，默认 120 秒。
+- `MuAgents:CommandExecution:MaxExecutionSeconds`：单次控制台进程最长时间，默认 120 秒。
 - `MuAgents:Context:MaxContextTokens`：上下文窗口上限。
 - `MuAgents:Context:ReservedOutputTokens`：为模型输出预留的 Token 数。
 - `MuAgents:Context:RecentTurnsToKeep`：压缩时强制保留的最近轮次数。
@@ -111,7 +115,7 @@ dotnet run --project apps/MuAgents.App
 dotnet run --project apps/MuAgents.App -- -d D:\work\my-project --urls http://127.0.0.1:5000
 ```
 
-不传 `-d` 时，执行启动命令时的当前目录会成为项目根目录。传入相对路径时，相对于启动终端当前目录解析。API 和 CLI 应选择同一个项目目录，才能使用同一组 `.muagent` 配置和文件上下文。
+APP 不传 `-d` 时，执行启动命令时的当前目录会成为项目根目录。传入相对路径时，相对于启动终端当前目录解析。CLI 不接受 `-d`，只通过 `--url` 连接 APP；其当前目录只影响 `/add` 读取哪些客户端本地文件。
 
 默认监听地址以 ASP.NET Core 启动输出为准。另开终端检查：
 
@@ -144,12 +148,12 @@ D:\tools\MuAgents\MuAgents.Cli.exe --url http://localhost:5000/ --user admin
 
 ```powershell
 D:\tools\MuAgents\MuAgents.App.exe -d D:\work\my-project --urls http://127.0.0.1:5000
-D:\tools\MuAgents\MuAgents.Cli.exe -d D:\work\my-project --url http://127.0.0.1:5000/ --user admin
+D:\tools\MuAgents\MuAgents.Cli.exe --url http://127.0.0.1:5000/ --user admin
 ```
 
-此时项目根目录为 `D:\work\my-project`，全部状态位于 `D:\work\my-project\.muagent`，`/add .` 也引用 `D:\work\my-project`。切换到另一个项目目录启动，会得到另一套完全独立的配置、身份库和会话。
+此时 APP 项目根目录为 `D:\work\my-project`，全部状态位于 `D:\work\my-project\.muagent`。CLI 的 `/add .` 始终引用 CLI 启动终端的当前目录；如需引用 APP 项目，可先切换到该目录启动 CLI，或使用 `/add D:\work\my-project`。用另一个 `-d` 启动 APP，会得到另一套完全独立的配置、身份库和会话。
 
-启动入口会在创建宿主或 HTTP 客户端之前重定向以下环境变量：
+APP 启动入口会在创建宿主之前重定向以下环境变量；CLI 不修改进程环境，也不创建本地 `.muagent`：
 
 | 环境变量 | 项目内位置 |
 | --- | --- |
@@ -165,12 +169,27 @@ MCP、OCR、PDF/内容处理及 Skill 脚本子进程会再次覆盖这些变量
 
 ## 4. 首次初始化和登录
 
-身份库为空时，只能成功执行一次初始化：
+CLI 默认用户为 `admin`。身份库为空时，普通 CLI 启动会自动创建无密码的 `admin` 用户、`Local` 租户和 `Owner` 成员关系，然后直接登录：
+
+```powershell
+dotnet run --project apps/MuAgents.Cli -- --url http://localhost:5000/
+```
+
+无密码模式面向仅监听 `127.0.0.1` 的本地开发环境。首次启动就要设置密码时，使用 `--setup-password`；CLI 会要求输入两遍密码，成功初始化后，以后启动不再需要该参数，但会在无密码登录失败后自动提示密码：
+
+```powershell
+dotnet run --project apps/MuAgents.Cli -- `
+  --url http://localhost:5000/ --setup-password
+```
+
+`--bootstrap` 是 `--setup-password` 的兼容别名。自定义用户名和租户仍可增加 `--user <用户名>` 与 `--tenant-name <租户名>`。
+
+直接调用 HTTP API 时，身份库为空只能成功初始化一次；`password` 为空串会建立无密码账户：
 
 ```powershell
 $body = @{
   userName = "admin"
-  password = "请使用足够长的独立密码"
+  password = ""
   tenantName = "Local"
 } | ConvertTo-Json
 
@@ -179,14 +198,14 @@ Invoke-RestMethod -Method Post `
   -ContentType application/json -Body $body
 ```
 
-它会原子创建系统管理员、首个租户和 `Owner` 成员关系。重复调用返回 HTTP 409。
+需要从一开始启用密码时，把空串替换为满足 `MinimumPasswordLength` 的密码。初始化会原子创建系统管理员、首个租户和 `Owner` 成员关系，重复调用返回 HTTP 409。
 
 登录并保存 JWT：
 
 ```powershell
 $loginBody = @{
   userName = "admin"
-  password = "请使用初始化时的密码"
+  password = "" # 设置过密码时填写对应密码
   useCookie = $false
 } | ConvertTo-Json
 
@@ -201,22 +220,20 @@ $headers = @{ Authorization = "Bearer $($login.accessToken)" }
 
 ## 5. CLI 对话
 
-首次初始化并登录：
+无密码默认启动：
+
+```powershell
+dotnet run --project apps/MuAgents.Cli -- --url http://localhost:5000/
+```
+
+首次运行即设置密码：
 
 ```powershell
 dotnet run --project apps/MuAgents.Cli -- `
-  -d D:\work\my-project --url http://localhost:5000/ --user admin `
-  --bootstrap --tenant-name Local
+  --url http://localhost:5000/ --setup-password
 ```
 
-常规登录：
-
-```powershell
-dotnet run --project apps/MuAgents.Cli -- `
-  -d D:\work\my-project --url http://localhost:5000/ --user admin
-```
-
-多租户用户额外传 `--tenant <tenant-id>`。CLI 每次启动会新建会话；普通文本直接发送给模型，以 `/` 开头的内容由 CLI 解释为本地命令。
+设置密码后，常规启动命令不变，CLI 会先尝试无密码登录，收到拒绝后才提示输入密码。多租户用户额外传 `--tenant <tenant-id>`。CLI 每次启动会新建会话；普通文本直接发送给模型，以 `/` 开头的内容由 CLI 解释为本地命令。
 
 交互终端支持与 Codex/Claude Code 类似的斜杠命令补全：输入 `/` 后按 `Tab` 显示所有候选；输入命令前缀后按 `Tab`，唯一候选会自动补齐，多个候选会先扩展共同前缀、再次按 `Tab` 显示候选清单。上下方向键可浏览本次运行的输入历史。输入被管道重定向时自动退回普通逐行读取。
 
@@ -226,7 +243,7 @@ dotnet run --project apps/MuAgents.Cli -- `
 | --- | --- |
 | `/help` | 显示命令帮助。 |
 | `/model` | 从 API 查询当前模型名、协议、完整端点、上下文/输出上限、图片/工具能力和密钥是否已配置；不会显示密钥值。 |
-| `/status` | 显示 API、用户、租户、会话、CLI/API 项目根目录、`.muagent` 状态目录、服务端已加载配置文件、临时目录、引用文件统计，以及当前/最大上下文 Token。 |
+| `/status` | 显示 API、用户、租户、会话、CLI 文件工作目录、APP 项目根、APP `.muagent` 状态目录、控制台审批模式、服务端已加载配置文件、引用统计，以及当前/最大上下文 Token。 |
 | `/compact` | 手动持久化压缩当前会话；压缩后不超过最大上下文的 1/3。若原本已低于目标则不改写。 |
 | `/new [标题]` | 新建会话，当前文件引用继续保留。 |
 | `/add [文件或目录]` | 添加单文件或递归添加目录；省略路径等同 `/add .`。包含空格的路径可用双引号包围。 |
@@ -253,7 +270,58 @@ MCP 与 Skill 配置修改命令要求当前登录用户是系统管理员。普
 
 这里的当前值按模型请求相同的估算器计算，包含已持久化会话消息和工具定义；它是预算估算值，不是模型供应商最终账单值。
 
-### 5.2 引用当前或指定目录
+### 5.2 控制台执行和审批
+
+APP 向模型注册 `local.execute_command` 工具。模型必须分别提交可执行文件、参数数组、可选项目内工作目录和超时，不会由 APP 隐式拼接 Shell 字符串。例如模型可请求：
+
+```json
+{
+  "command": "dotnet",
+  "arguments": [ "test", "MuAgents.sln", "-c", "Release" ],
+  "workingDirectory": ".",
+  "timeoutSeconds": 120
+}
+```
+
+在项目级 `.muagent/config/appsettings.json` 中配置审批：
+
+```json
+{
+  "MuAgents": {
+    "CommandExecution": {
+      "ApprovalMode": "RequireApproval",
+      "AllowedCommands": [ "dotnet", "git", "pwsh.exe" ],
+      "ApprovalTimeoutSeconds": 120,
+      "MaxExecutionSeconds": 120,
+      "MaxOutputCharacters": 48000
+    }
+  }
+}
+```
+
+三种模式的精确行为：
+
+| 模式 | 行为 | 建议场景 |
+| --- | --- | --- |
+| `Denied` | 工具保留可解释的拒绝结果，但绝不启动进程。 | 生产、只读问答或不允许本地执行的服务。 |
+| `RequireApproval` | 每次工具调用通过 NDJSON 返回调用 ID、命令和参数；CLI 显示详情并要求当前用户输入 `y`，其他输入均拒绝。 | 默认开发模式。 |
+| `Allowed` | 通过参数、目录和白名单校验后自动启动，不等待客户端。 | 可信、单用户且已有外部沙箱的环境。 |
+
+审批决定绑定到“租户 + 用户 + 会话 + 工具调用 ID”，不能用一个批准释放其他用户或其他调用。等待审批超过 `ApprovalTimeoutSeconds` 会自动失败。`AllowedCommands` 为空表示允许任意可执行程序入口；非空时只接受列出的文件名或精确路径。命令工作目录必须位于 APP 项目根内。修改本节配置后需要重启 APP。
+
+控制台进程由 APP 启动，工作目录是项目根或其子目录。`TEMP`、`TMP`、`.NET CLI` 和 NuGet 缓存继续重定向到项目 `.muagent/data/`；标准输入关闭，标准输出/错误受字符上限约束，超时会终止整个进程树。命令本身拥有运行 APP 的操作系统账户权限，因此 `Allowed` 并不等同于沙箱，处理不可信项目时应使用容器或低权限账户。
+
+自定义客户端在 `RequireApproval` 模式下应监听 `tool_call_started` 事件中的 `callId`、`name` 和 `argumentsJson`。确认后调用：
+
+```http
+POST /api/v1/command-approvals/{conversationId}/{callId}
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"approved":true}
+```
+
+### 5.3 引用当前或指定目录
 
 ```text
 /add .
@@ -309,6 +377,7 @@ curl.exe -N -X POST "http://localhost:5000/api/v1/conversations/$id/messages" `
 | `references` | array/null | 文本文件引用，每项包含 `path` 和 `content`；服务端再次执行数量和长度限制。 |
 
 事件 `type` 可能是：`text_delta`、`reasoning_delta`、`tool_call_started`、`tool_call_completed`、`compaction_started`、`compaction_completed`、`usage_updated`、`warning`、`completed` 或 `error`。客户端必须逐行解析，不能把整个响应当成一个 JSON 对象。
+`tool_call_started` 始终包含 `callId` 和工具 `name`；当工具是 `local.execute_command` 时还包含 `argumentsJson`，用于客户端在执行前展示并审批具体命令。其他工具不会在开始事件中公开参数。
 
 ### 6.3 查询历史
 
@@ -336,6 +405,19 @@ Invoke-RestMethod -Method Post `
 
 ## 7. 用户与租户管理
 
+拥有项目目录和数据库访问权的服务器管理员可以在 APP 停止后修改任意现有用户密码。该管理模式不会监听 HTTP 端口，密码不会出现在启动参数中；输入并确认成功后进程立即退出：
+
+```powershell
+dotnet run --project apps/MuAgents.App -- `
+  -d D:\work\my-project --set-password admin
+
+# 发布后二进制形式
+D:\tools\MuAgents\MuAgents.App.exe `
+  -d D:\work\my-project --set-password admin
+```
+
+`--set-password=<用户名>` 也可使用。新密码必须满足项目 `MinimumPasswordLength`，默认至少 12 个字符。目标用户不存在、两次输入不同或密码不合规时退出码为 2，数据库不会写入新密码。
+
 创建普通用户和租户要求系统管理员权限：
 
 ```powershell
@@ -360,6 +442,8 @@ Invoke-RestMethod -Method Put `
 `GET /api/v1/auth/tenants` 返回当前用户的全部租户成员关系；`GET /api/v1/auth/me` 返回当前 Token 的身份和租户。
 
 `GET /api/v1/model` 返回当前模型配置摘要，供 CLI `/model` 使用。响应只包含协议、端点、模型名、Token 上限、能力开关和 `apiKeyConfigured` 布尔值，不返回 API Key。
+
+`GET /api/v1/runtime` 返回 APP 项目根、`.muagent` 状态根、当前控制台审批模式及实际加载的配置文件，供 CLI `/status` 和部署检查使用。
 
 ## 8. 文件、PDF、图片和 OCR
 
@@ -508,14 +592,18 @@ HTTP API 对应为 `GET /api/v1/skills/config`、`POST/DELETE /api/v1/skills/dir
 - **文件访问被拒绝**：把文件放入当前项目目录，或把规范化后的绝对目录加入相应允许根目录。
 - **PDF 无文本**：安装 Poppler；扫描 PDF 还要安装 Tesseract 及对应语言包。
 - **脚本被拒绝**：检查 `ScriptPolicy`、`AllowedRuntimes` 和请求的 `approved`。
+- **控制台命令被拒绝或一直等待**：检查 `CommandExecution:ApprovalMode`、`AllowedCommands`，并确认 `RequireApproval` 模式下 CLI 仍连接且在超时前提交了决定。
 - **HTTP 429**：登录或初始化请求过于频繁，等待固定窗口重置。
+- **CLI 突然要求密码**：该用户已经设置密码；输入现有密码，遗忘时在服务器项目目录使用 APP `--set-password <用户名>` 管理模式重设。
 - **需要迁移项目状态**：停止服务后复制整个 `.muagent/`，不要只复制数据库；不同项目不要共用同一个状态目录。
 
 ## 11. 安全建议
 
 - 不提交 `.muagent/`，不在日志和文档中输出 API Key、密码或 JWT；
 - 生产环境使用 HTTPS，并设置高强度随机 JWT 签名密钥；
+- 无密码管理员仅适合绑定 `127.0.0.1` 的可信本机开发；监听局域网或公网前必须用 `--setup-password` 或 APP `--set-password admin` 设置密码；
 - 限制项目 `.muagent/`、SQLite 数据库和 `.muagent/data/keys` 的操作系统访问权限；
 - 仅配置必要的文件根目录、MCP 工具、Skill 运行时和 Web 服务；
+- 生产环境优先使用 `CommandExecution:ApprovalMode=Denied`；如需执行，使用绝对命令白名单、低权限账户或容器，并保留逐次审批；
 - 对允许执行脚本的部署使用低权限专用账户；
 - 备份时同时保存数据库和 Data Protection 密钥，并采用加密存储。

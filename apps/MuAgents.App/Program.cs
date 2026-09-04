@@ -17,6 +17,7 @@ using MuAgents.Hosting;
 using MuAgents.OpenAI;
 using MuAgents.Mcp;
 using MuAgents.Skills;
+using MuAgents.Tools;
 
 // -d 可显式指定项目根；未指定时使用启动终端当前目录。通用参数先被移除，避免宿主重复解释。
 var launchArguments = RuntimeLaunchArguments.Parse(args);
@@ -63,6 +64,7 @@ AddLoadedConfiguration(projectSettingsPath);
 
 Console.WriteLine($"MuAgents 项目根目录：{RuntimePaths.ProjectDirectory}");
 Console.WriteLine($"MuAgents 状态目录：{RuntimePaths.RootDirectory}");
+Console.WriteLine($"控制台审批模式：{builder.Configuration.GetValue<CommandApprovalMode>("MuAgents:CommandExecution:ApprovalMode")}");
 Console.WriteLine("本次加载的配置文件：");
 foreach (var configurationFile in loadedConfigurationFiles) Console.WriteLine($"  {configurationFile}");
 
@@ -183,6 +185,27 @@ app.UseAuthorization();
 // 映射路由前初始化两组表结构，使启动失败能够尽早暴露而不是延迟到第一个用户请求。
 await app.Services.GetRequiredService<IConversationStore>().InitializeAsync();
 await app.Services.GetRequiredService<IIdentityStore>().InitializeAsync();
+
+// --set-password 是本机一次性管理模式：从当前项目数据库读取用户、安全输入两遍新密码，
+// 更新成功后直接退出，不开放 HTTP 监听，也不把明文密码放进进程参数或配置文件。
+if (launchArguments.PasswordResetUserName is { } passwordResetUserName)
+{
+    Console.WriteLine($"本机密码修改模式，目标用户：{passwordResetUserName}");
+    try
+    {
+        var newPassword = ReadConfirmedPassword();
+        await using var scope = app.Services.CreateAsyncScope();
+        var authentication = scope.ServiceProvider.GetRequiredService<LocalAuthenticationService>();
+        await authentication.ResetPasswordAsync(passwordResetUserName, newPassword, CancellationToken.None);
+        Console.WriteLine($"用户 {passwordResetUserName} 的密码已修改；APP 未启动 HTTP 服务。");
+    }
+    catch (Exception exception) when (exception is BadHttpRequestException or KeyNotFoundException or InvalidOperationException)
+    {
+        Console.Error.WriteLine($"密码修改失败：{exception.Message}");
+        Environment.ExitCode = 2;
+    }
+    return;
+}
 // 动态扩展配置在启动时就创建，管理员无需先调用接口才能找到配置文件。
 _ = app.Services.GetRequiredService<McpConfigurationStore>();
 _ = app.Services.GetRequiredService<SkillConfigurationStore>();
@@ -272,12 +295,26 @@ api.MapGet("/model", (IOptions<OpenAiCompatibleOptions> options) =>
         apiKeyConfigured = !string.IsNullOrWhiteSpace(model.ApiKey)
     });
 });
-api.MapGet("/runtime", () => Results.Ok(new
+api.MapGet("/runtime", (IOptions<CommandExecutionOptions> commandOptions) => Results.Ok(new
 {
     projectDirectory = RuntimePaths.ProjectDirectory,
     stateDirectory = RuntimePaths.RootDirectory,
+    commandApprovalMode = commandOptions.Value.ApprovalMode.ToString(),
     configurationFiles = loadedConfigurationFiles
 }));
+// 该接口只能释放当前认证身份、当前会话和精确调用 ID 对应的等待项，不能主动创建或执行命令。
+api.MapPost("/command-approvals/{conversationId}/{callId}", (
+    HttpContext http,
+    string conversationId,
+    string callId,
+    CommandApprovalDecision request,
+    CommandApprovalCoordinator approvals) =>
+{
+    var identity = RequestIdentity.From(http);
+    return approvals.Resolve(identity.TenantId, identity.UserId, conversationId, callId, request.Approved)
+        ? Results.Ok(new { conversationId, callId, request.Approved })
+        : Results.NotFound();
+});
 api.MapGet("/auth/tenants", async (
     HttpContext http,
     IIdentityStore store,
@@ -652,6 +689,31 @@ api.MapDelete("/mcp/{name}", async Task<IResult> (string name, IMcpClientManager
 
 app.Run();
 
+// 交互输入不回显；重定向输入时读取两行，便于服务器自动化管理但仍不接受命令行明文密码。
+static string ReadConfirmedPassword()
+{
+    Console.Write("New password: ");
+    var password = ReadSecret();
+    Console.Write("Confirm password: ");
+    var confirmation = ReadSecret();
+    if (!string.Equals(password, confirmation, StringComparison.Ordinal))
+        throw new InvalidOperationException("两次输入的密码不一致。");
+    return password;
+}
+
+static string ReadSecret()
+{
+    if (Console.IsInputRedirected) return Console.ReadLine() ?? string.Empty;
+    var value = new StringBuilder();
+    while (Console.ReadKey(intercept: true) is { } key && key.Key != ConsoleKey.Enter)
+    {
+        if (key.Key == ConsoleKey.Backspace && value.Length > 0) value.Length--;
+        else if (!char.IsControl(key.KeyChar)) value.Append(key.KeyChar);
+    }
+    Console.WriteLine();
+    return value.ToString();
+}
+
 static string? ComposeReferencedMessage(
     string? text,
     IReadOnlyList<ReferencedFileRequest>? references)
@@ -693,7 +755,7 @@ static string DeriveMcpName(string url)
 
 /// <summary>创建一个属于当前认证租户和用户的新会话。</summary>
 public sealed record CreateConversationRequest(string? Title);
-/// <summary>首次初始化管理员及默认租户所需数据。</summary>
+/// <summary>首次初始化管理员及默认租户所需数据；空密码表示本地开发用无密码账户。</summary>
 public sealed record BootstrapRequest(string UserName, string Password, string TenantName);
 /// <summary>登录凭据、可选租户选择和 Cookie 登录开关。</summary>
 public sealed record LoginRequest(string UserName, string Password, string? TenantId = null, bool UseCookie = false);
@@ -723,6 +785,8 @@ public sealed record RunScriptRequest(IReadOnlyList<string>? Arguments = null, b
 public sealed record McpAddRequest(string Url, string? Name = null, bool Enabled = true, int TimeoutSeconds = 60);
 /// <summary>统一的启用或禁用请求。</summary>
 public sealed record EnabledRequest(bool Enabled);
+/// <summary>当前登录用户对一次等待中的控制台调用作出的明确决定。</summary>
+public sealed record CommandApprovalDecision(bool Approved);
 /// <summary>添加 Skill 根目录的请求。</summary>
 public sealed record SkillDirectoryRequest(string Path);
 

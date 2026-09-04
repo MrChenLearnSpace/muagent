@@ -1,4 +1,4 @@
-# MuAgents 设计文档（v0.2）
+# MuAgents 设计文档（v0.3）
 
 ## 1. 项目定位
 
@@ -29,47 +29,180 @@ MuAgents 是一个使用 C#/.NET 构建的跨平台 Agent 应用程序。它负�
 
 ## 4. 总体架构
 
-```text
-Application Host / API / CLI
-       |
-       v
-Agent Runtime (会话循环、预算、策略、事件)
-  |        |          |           |          |
-  v        v          v           v          v
-Models   Context    Tools       Content     Skills
-Adapter  Manager    Gateway     Readers     Loader
-           |       /   |   \       /   \
-           |    Local MCP Web   MD   PDF
-           v
-      Compaction
-      + Tokenizer
+下图描述当前代码的实际进程、模块和数据边界。CLI 是远程展示客户端，不承载 Agent、MCP 或控制台进程；这些能力全部位于 APP：
+
+```mermaid
+flowchart LR
+    User[终端用户]
+    ApiClient[其他 HTTP 客户端]
+    Model[兼容模型服务<br/>Responses / Chat Completions / Messages]
+    McpServer[MCP Server<br/>HTTP 或 Stdio]
+    Search[Web 搜索/网页服务]
+    Process[项目控制台子进程<br/>dotnet / git / pwsh / bash 等]
+    SkillProcess[Skill 脚本子进程<br/>受 ScriptPolicy 单独控制]
+
+    subgraph CliProcess[MuAgents.Cli 进程：展示与输入]
+        CliLine[斜杠补全与交互行编辑]
+        CliFiles[FileReferenceSet<br/>读取 CLI 当前目录文件]
+        CliHttp[认证 HTTP/NDJSON 客户端]
+        CliApproval[逐次命令审批提示]
+        CliLine --> CliHttp
+        CliLine --> CliFiles -->|文件内容作为不可信用户输入| CliHttp
+        CliHttp --> CliApproval
+    end
+
+    subgraph AppProcess[MuAgents.App 进程：唯一运行时宿主]
+        Api[ASP.NET Core /api/v1<br/>认证、授权、限流、异常处理]
+        Auth[LocalAuthenticationService<br/>无密码默认账户 / 密码哈希 / Cookie / JWT]
+        Runtime[AgentRuntime<br/>会话锁、模型/工具循环、NDJSON 事件]
+        Context[ContextManager<br/>Token 估算、2/3 自动压缩、1/3 手动压缩]
+        Adapter[OpenAiCompatibleChatModel<br/>三种协议适配]
+        Gateway[ToolGateway<br/>注册、调用 ID、并发、超时、截断、遥测]
+        ApprovalApi[命令审批 API]
+        Approval[CommandApprovalCoordinator<br/>租户+用户+会话+调用 ID]
+        Admin[MCP / Skill 动态管理 API]
+
+        subgraph ToolImplementations[模型可调用工具]
+            Clock[local.current_time]
+            FileTool[local.read_file / 内容读取]
+            WebTool[web.search / web.fetch]
+            McpTool[mcp.call]
+            CommandTool[local.execute_command]
+        end
+
+        subgraph ContentPipeline[内容与扩展]
+            Readers[Markdown / Text / PDF Readers]
+            Ocr[Tesseract OCR]
+            Skills[FileSystemSkillCatalog<br/>Skill 指令与受控脚本]
+            SkillRunner[ProcessScriptRunner<br/>运行时白名单、脚本哈希、超时]
+            McpManager[McpClientManager<br/>连接、发现、过滤、调用]
+        end
+
+        Api --> Auth
+        Api --> Runtime
+        Api --> Admin
+        Api --> ApprovalApi --> Approval
+        Runtime --> Context
+        Runtime --> Adapter
+        Runtime --> Gateway
+        Gateway --> Clock
+        Gateway --> FileTool --> Readers --> Ocr
+        Gateway --> WebTool
+        Gateway --> McpTool --> McpManager
+        Gateway --> CommandTool
+        CommandTool --> Approval
+        Api --> Skills
+        Skills --> SkillRunner
+        Admin --> Skills
+        Admin --> McpManager
+    end
+
+    subgraph ProjectRoot[APP 选定的项目根：-d 或 APP 启动目录]
+        ProjectFiles[项目源码与普通文件]
+        Config[.muagent/config<br/>模型 / APP / MCP / Skill 配置]
+        Database[.muagent/data/muagents.db<br/>身份、租户、会话、消息]
+        Keys[.muagent/data/keys<br/>Data Protection 密钥]
+        RuntimeData[.muagent/data/temp + dotnet + nuget<br/>子进程临时目录和缓存]
+    end
+
+    User --> CliLine
+    CliHttp -->|HTTPS/HTTP + Bearer<br/>NDJSON 流| Api
+    ApiClient -->|认证 API| Api
+    Adapter -->|SSE/JSON| Model
+    WebTool -->|受 SSRF 防护的 HTTP| Search
+    McpManager --> McpServer
+    CommandTool -->|参数数组，无隐式 Shell| Process
+    Process --> ProjectFiles
+    Process --> RuntimeData
+    SkillRunner --> SkillProcess
+    SkillProcess --> RuntimeData
+    Api --> Config
+    Auth --> Database
+    Runtime --> Database
+    Auth --> Keys
+    Readers --> ProjectFiles
+    Skills --> ProjectFiles
+    McpManager --> RuntimeData
 ```
 
-建议解决方案结构：
+实际源码依赖保持单向：`MuAgents.App` 通过 `MuAgents.Hosting` 装配具体实现；`Core` 只依赖 `MuAgents.Abstractions` 中的模型、工具和存储契约，不直接依赖模型供应商 SDK。`MuAgents.Cli` 只依赖 HTTP 契约和本地文件引用逻辑，不引用 APP 的运行时服务。
 
-```text
-src/
-  MuAgents.Abstractions/       公共契约和领域模型
-  MuAgents.Core/               Agent 循环、上下文和策略
-  MuAgents.OpenAI/             OpenAI 兼容适配器
-  MuAgents.Messages/           Messages 风格接口适配器
-  MuAgents.Tools/              本地工具与工具调度
-  MuAgents.Mcp/                MCP 客户端和工具映射
-  MuAgents.Web/                搜索、抓取和正文抽取
-  MuAgents.Content/            MD、PDF、图片内容处理
-  MuAgents.Ocr/                跨平台 OCR 抽象与默认实现
-  MuAgents.Skills/             Skill 发现、解析和加载
-  MuAgents.Hosting/            DI、配置、日志、HTTP Host
-  MuAgents.Persistence/        SQLite、身份与多租户数据访问
-apps/
-  MuAgents.App/                可执行应用及 ASP.NET Core Host
-  MuAgents.Cli/                命令行交互与管理入口
-tests/
-  MuAgents.UnitTests/
-  MuAgents.IntegrationTests/
+### 4.1 一次对话和工具调用
+
+```mermaid
+sequenceDiagram
+    actor U as 用户
+    participant C as MuAgents.Cli
+    participant A as MuAgents.App API
+    participant R as AgentRuntime
+    participant D as SQLite
+    participant M as 模型适配器/模型服务
+    participant G as ToolGateway
+    participant T as 具体工具
+
+    U->>C: 输入消息，可带 /add 文件快照
+    C->>A: POST messages，Bearer + JSON
+    A->>R: 已验证的 tenantId/userId/conversationId
+    R->>D: 追加用户消息并加载历史
+    R->>R: Token 预算检查，必要时持久化压缩
+    R->>M: 统一 AgentRequest + 工具定义
+    M-->>R: SSE 文本增量或工具调用
+    R-->>C: NDJSON 文本/推理/usage 事件
+    alt 模型请求工具
+        R->>D: 保存 Assistant 工具调用
+        R-->>C: tool_call_started；控制台工具额外带参数
+        R->>G: 调用工具
+        G->>T: 校验 JSON、注入调用 ID、执行
+        T-->>G: ToolResult
+        G-->>R: 有序工具结果
+        R->>D: 保存 Tool 消息
+        R->>M: 携带工具结果继续模型循环
+    else 模型直接完成
+        R->>D: 保存 Assistant 文本
+    end
+    R-->>C: completed
+    C->>A: 查询当前/最大上下文
+    A-->>C: Token 状态
 ```
 
-依赖方向统一指向 `Abstractions`，`Core` 不直接引用任何供应商 SDK。
+### 4.2 控制台逐次审批链路
+
+```mermaid
+sequenceDiagram
+    actor U as 当前登录用户
+    participant C as MuAgents.Cli
+    participant A as MuAgents.App API
+    participant R as AgentRuntime
+    participant G as ToolGateway
+    participant Q as CommandApprovalCoordinator
+    participant E as CommandExecutionTool
+    participant P as 控制台子进程
+
+    R-->>C: tool_call_started(callId, local.execute_command, argumentsJson)
+    R->>G: Invoke(callId)
+    G->>E: 参数 + tenant/user/conversation/callId
+    alt Denied
+        E-->>G: 安全拒绝，不创建进程
+    else Allowed
+        E->>P: 立即启动已校验命令
+        P-->>E: exitCode/stdout/stderr
+    else RequireApproval
+        E->>Q: 注册并等待精确调用 ID
+        C->>U: 显示命令、参数、工作目录 [y/N]
+        U->>C: 批准或拒绝
+        C->>A: POST command-approvals/conversationId/callId
+        A->>Q: 以认证身份 Resolve
+        Q-->>E: 决定
+        alt 批准
+            E->>P: 启动命令
+            P-->>E: exitCode/stdout/stderr
+        else 拒绝或超时
+            E-->>G: 安全拒绝结果
+        end
+    end
+    G-->>R: ToolResult
+    R-->>C: tool_call_completed
+```
 
 ## 5. 核心领域模型
 
@@ -234,11 +367,11 @@ public interface IAgentTool
 - 工具注册、命名冲突处理和 JSON Schema 校验。
 - 并行执行彼此独立的工具调用。
 - 超时、取消、并发上限和结果大小限制。
-- 权限策略及敏感操作确认。
+- 把供应商工具调用 ID 注入 `ToolExecutionContext`，供审批能力绑定到精确调用。
 - 异常转换为模型可理解但不泄露堆栈/密钥的结果。
 - 调用 ID、耗时、状态和结果摘要审计。
 
-工具名建议使用命名空间，例如 `local.read_file`、`mcp.github.search`、`web.fetch`。
+当前模型工具包括 `local.current_time`、`local.read_file`、`local.execute_command`、`web.search`、`web.fetch` 和统一 MCP 入口 `mcp.call`。其中控制台工具实现三档策略：`Denied` 在启动进程前拒绝；`RequireApproval` 通过 `CommandApprovalCoordinator` 等待当前认证用户批准；`Allowed` 通过校验后自动执行。命令和参数始终分开传递，工作目录必须在 APP 项目根内，并使用 `.muagent/data/temp/commands` 下的一次性临时环境。
 
 ## 10. MCP 集成
 
@@ -352,7 +485,7 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 
 同一会话使用异步锁或乐观并发版本，避免两个请求同时修改历史。附件和大型工具产物通过 `IArtifactStore` 存储，消息只保存内容哈希和引用。
 
-应用内置用户和租户模型。每条会话、消息、附件、检查点、凭据引用和审计记录必须带 `TenantId`，用户通过成员关系访问租户资源。SQLite 查询必须由租户感知的数据访问层自动附加隔离条件，不能依赖业务调用方手工过滤。首版提供本地管理员账号和基于 Cookie/JWT 的认证方式；密码使用平台标准密码哈希，API Key/模型密钥使用系统密钥库或外部 Secret Provider。数据库迁移、备份、恢复和数据保留策略属于正式交付范围。
+应用内置用户和租户模型。每条会话、消息、附件、检查点、凭据引用和审计记录必须带 `TenantId`，用户通过成员关系访问租户资源。SQLite 查询必须由租户感知的数据访问层自动附加隔离条件，不能依赖业务调用方手工过滤。空身份库允许 CLI 自动建立无密码的本地 `admin`；显式 `--setup-password` 初始化或 APP 本机 `--set-password <用户>` 后使用平台标准密码哈希，CLI 只有在空密码登录被拒绝后才交互读取密码。无密码模式仅面向回环地址开发环境。API Key/模型密钥使用项目秘密配置或外部 Secret Provider。数据库迁移、备份、恢复和数据保留策略属于正式交付范围。
 
 ## 16. 配置草案
 
@@ -374,6 +507,13 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
       "CompactionRatio": 0.6667,
       "SafetyMarginTokens": 1024,
       "RecentTurnsToKeep": 4
+    },
+    "CommandExecution": {
+      "ApprovalMode": "RequireApproval",
+      "AllowedCommands": [ "dotnet", "git", "pwsh.exe" ],
+      "ApprovalTimeoutSeconds": 120,
+      "MaxExecutionSeconds": 120,
+      "MaxOutputCharacters": 48000
     },
     "Content": {
       "MaxFileBytes": 26214400,
@@ -403,7 +543,7 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 }
 ```
 
-启动时先解析通用的 `-d <项目路径>`/`--directory <项目路径>` 参数；未提供时以终端当前目录作为项目根。项目运行状态统一保存到 `<项目>/.muagent/`。上述相对数据库路径实际解析为 `.muagent/data/muagents.db`；MCP、Skill 和模型配置分别位于 `.muagent/config/`，因此多个项目不会共享会话、身份或扩展状态。API 启动日志和认证后的 `/api/v1/runtime` 会报告实际项目根、状态根及参与合并的配置文件，方便确认进程没有误用安装目录。
+APP 启动时先解析 `-d <项目路径>`/`--directory <项目路径>` 参数；未提供时以 APP 启动终端当前目录作为项目根。项目运行状态统一保存到 `<项目>/.muagent/`。上述相对数据库路径实际解析为 `.muagent/data/muagents.db`；MCP、Skill 和模型配置分别位于 `.muagent/config/`，因此多个项目不会共享会话、身份或扩展状态。API 启动日志和认证后的 `/api/v1/runtime` 会报告实际项目根、状态根、控制台审批模式及参与合并的配置文件。CLI 不解析 `-d`，也不创建状态目录；CLI 当前目录只用于本地文件引用。
 
 配置优先级为：代码默认值 < 安装目录 `appsettings.json`/模板 < 项目 `.muagent/config/appsettings.json` < 项目 `.muagent/config/muagents.settings.json` < 环境变量 < 启动参数 < 会话级覆盖。对每项配置启动时进行范围校验。
 
@@ -416,6 +556,8 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 - MCP、Web 和本地工具均执行 allowlist/denylist 策略。
 - 日志自动脱敏 API Key、Authorization、Cookie 和可能的个人数据。
 - 有副作用的工具由宿主策略决定是否需要用户确认。
+- 控制台审批按租户、用户、会话和工具调用 ID 四层绑定；默认拒绝、过期决定不可复用。
+- 控制台子进程关闭标准输入、限制项目内工作目录、执行时间和输出，且把所有常见临时/运行时缓存重定向到项目 `.muagent/data`。
 - 限制工具循环、递归 Skill、并发量、下载大小和总执行时间。
 - Skill 脚本以独立进程或受限容器运行；记录命令、参数、脚本哈希、授权人和退出状态。
 
@@ -471,6 +613,8 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 5. Skill 允许执行自带脚本，但必须受权限和执行沙箱约束。
 6. 首版使用 SQLite 持久化，并支持多用户和租户隔离。
 7. 基于现代 .NET 跨平台发布，兼容 Windows、Linux、macOS 和容器。
+8. 只有 APP 选择项目根并保存 `.muagent` 状态；CLI 是 HTTP/NDJSON 客户端，不接受 `-d`。
+9. Agent 可调用项目控制台，默认采用逐次用户审批，并提供完全禁止和自动允许模式。
 
 仍需在实现前或实现过程中确定：
 
@@ -479,8 +623,7 @@ Skill 内容视为非可信输入：禁止路径穿越；Skill 请求的工具�
 3. Web 搜索的默认 provider；架构允许 API、MCP 或自建服务替换。
 4. OCR 默认引擎及中英文模型的分发方式和许可证审查。
 5. 多租户是共享 SQLite 数据库逻辑隔离，还是每租户独立数据库；当前默认共享库逻辑隔离。
-6. Skill 脚本默认审批策略；当前建议 `RequireApproval`。
-7. 是否要求 Native AOT；带 OCR、动态 Skill 和部分数据库依赖时需要单独评估。
+6. 是否要求 Native AOT；带 OCR、动态 Skill 和部分数据库依赖时需要单独评估。
 
 ## 22. 本版额外补充的关键能力
 

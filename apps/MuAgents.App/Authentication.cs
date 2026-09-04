@@ -47,7 +47,10 @@ public sealed class LocalAuthenticationService(
         new UserAccount("dummy", "dummy", "DUMMY", "", false, true, "dummy", DateTimeOffset.UnixEpoch),
         "not-a-real-password-value");
 
-    /// <summary>创建系统管理员及首个租户；存储层保证该操作只成功一次。</summary>
+    /// <summary>
+    /// 创建系统管理员及首个租户；空密码表示显式的无密码账户，存储层保证该操作只成功一次。
+    /// 非空密码仍必须满足统一的密码强度规则。
+    /// </summary>
     public async Task<BootstrapIdentityResult> BootstrapAsync(
         string userName,
         string password,
@@ -55,10 +58,12 @@ public sealed class LocalAuthenticationService(
         CancellationToken cancellationToken)
     {
         ValidateUserName(userName);
-        ValidatePassword(password);
+        password ??= string.Empty;
+        if (password.Length > 0) ValidatePassword(password);
         ValidateTenantName(tenantName);
         var provisional = new UserAccount("", userName.Trim(), userName.Trim().ToUpperInvariant(), "", true, false, "", DateTimeOffset.UtcNow);
-        var hash = passwordHasher.HashPassword(provisional, password);
+        // 空串本身是“未设置密码”的稳定标记；绝不把普通明文密码写入数据库。
+        var hash = password.Length == 0 ? string.Empty : passwordHasher.HashPassword(provisional, password);
         return await store.BootstrapAsync(userName.Trim(), hash, tenantName.Trim(), cancellationToken).ConfigureAwait(false);
     }
 
@@ -128,9 +133,13 @@ public sealed class LocalAuthenticationService(
             return null;
         }
         var user = await store.FindUserAsync(userName, cancellationToken).ConfigureAwait(false);
+        // 只有密码哈希为空的账户可以用空密码登录；一旦通过本地管理参数设置密码，
+        // 后续空密码登录会自然失败，CLI 再进入交互式密码提示。
         var verification = user is null
             ? passwordHasher.VerifyHashedPassword(_dummyUser, _dummyPasswordHash, password)
-            : passwordHasher.VerifyHashedPassword(user, user.PasswordHash, password);
+            : user.PasswordHash.Length == 0
+                ? password.Length == 0 ? PasswordVerificationResult.Success : PasswordVerificationResult.Failed
+                : passwordHasher.VerifyHashedPassword(user, user.PasswordHash, password);
         if (user is null || user.IsDisabled || verification == PasswordVerificationResult.Failed)
         {
             await store.RecordAuthenticationEventAsync(user?.Id, "login", false, remoteAddress, cancellationToken).ConfigureAwait(false);
@@ -175,6 +184,25 @@ public sealed class LocalAuthenticationService(
         await store.RecordAuthenticationEventAsync(user.Id, "login", true, remoteAddress, cancellationToken).ConfigureAwait(false);
         return new AuthenticatedSession(user, membership, principal,
             new JwtSecurityTokenHandler().WriteToken(token), expiresAt);
+    }
+
+    /// <summary>
+    /// 由 APP 本机管理模式重设指定用户密码。该操作不要求旧密码，因为能够启动 APP 并访问
+    /// 项目数据库的操作系统用户已经具有同等数据权限；新密码仍按项目规则校验并只保存哈希。
+    /// </summary>
+    public async Task ResetPasswordAsync(
+        string userName,
+        string newPassword,
+        CancellationToken cancellationToken)
+    {
+        ValidateUserName(userName);
+        ValidatePassword(newPassword);
+        var user = await store.FindUserAsync(userName.Trim(), cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException($"User '{userName.Trim()}' was not found.");
+        var hash = passwordHasher.HashPassword(user, newPassword);
+        await store.UpdatePasswordHashAsync(user.Id, hash, cancellationToken).ConfigureAwait(false);
+        await store.RecordAuthenticationEventAsync(
+            user.Id, "password_reset_local", true, "local-console", cancellationToken).ConfigureAwait(false);
     }
 
     private void ValidatePassword(string password)

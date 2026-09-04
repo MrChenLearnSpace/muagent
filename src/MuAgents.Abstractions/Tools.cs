@@ -17,7 +17,8 @@ public sealed record ToolExecutionContext(
     string TenantId,
     string ConversationId,
     string? UserId = null,
-    IServiceProvider? Services = null);
+    IServiceProvider? Services = null,
+    string? ToolCallId = null);
 
 /// <summary>单个模型可调用工具的实现契约。</summary>
 public interface IAgentTool
@@ -29,6 +30,9 @@ public interface IAgentTool
         ToolExecutionContext context,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>标记由工具自身分别管理审批等待和执行超时，网关不再叠加统一工具超时。</summary>
+public interface IManagesOwnToolTimeout { }
 
 /// <summary>模型生成并等待网关执行的一次工具调用。</summary>
 public sealed record ToolInvocation(string CallId, string Name, string ArgumentsJson);

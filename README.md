@@ -7,9 +7,9 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 - 通过 NDJSON 实时推送文本、推理、工具调用、用量和完成事件。
 - 内置 Cookie 与 JWT Bearer 认证，并按用户、租户隔离会话。
 - 支持文本、Markdown、PDF、图片和 OCR 内容读取。
-- 支持本地工具、Web 搜索/抓取、MCP 服务及目录式 Skill。
+- 支持经过安全边界和审批策略控制的项目控制台命令、本地工具、Web 搜索/抓取、MCP 服务及目录式 Skill。
 - CLI 支持文件引用、MCP/Skill 动态管理、上下文状态和手动压缩等斜杠命令。
-- 默认以启动命令所在目录作为项目根，也可用 `-d <项目路径>` 显式指定；每个项目的配置、会话和缓存独立保存在自己的 `.muagent/` 中。
+- APP 默认以启动命令所在目录作为项目根，也可用 `-d <项目路径>` 显式指定；每个项目的配置、会话和缓存独立保存在自己的 `.muagent/` 中。
 - 暴露 `ActivitySource` 和 `Meter`，可接入 OpenTelemetry。
 
 ## 环境要求
@@ -59,18 +59,21 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
    dotnet run --project "$muagentsSource\apps\MuAgents.App" -- -d $projectPath
    ```
 
-4. 首次运行时，在另一个终端启动 CLI 并初始化管理员：
+4. 在另一个终端直接启动 CLI：
 
    ```powershell
    dotnet run --project "$muagentsSource\apps\MuAgents.Cli" -- `
-     -d $projectPath `
-     --url http://localhost:5000/ `
-     --user admin `
-     --bootstrap `
-     --tenant-name Local
+     --url http://localhost:5000/
    ```
 
-   按提示输入密码。密码长度必须满足配置中的 `MinimumPasswordLength`，默认至少 12 个字符。以后启动 CLI 时去掉 `--bootstrap`。
+   全新项目会自动创建无密码的 `admin` 用户和 `Local` 租户，因此默认启动不再询问密码。仅监听本机的开发环境可以使用这种方式。如果首次运行就要启用密码，增加 `--setup-password`，CLI 会要求输入并确认密码；以后启动时无需再带该参数，但会自动提示登录密码：
+
+   ```powershell
+   dotnet run --project "$muagentsSource\apps\MuAgents.Cli" -- `
+     --url http://localhost:5000/ --setup-password
+   ```
+
+   `--bootstrap` 继续作为 `--setup-password` 的兼容别名。密码长度必须满足 `MinimumPasswordLength`，默认至少 12 个字符。
 
 进入 CLI 后，输入 `/` 再按 `Tab` 会列出命令，输入唯一前缀（例如 `/mcp_d`）再按 `Tab` 会补全命令。也可直接使用：
 
@@ -91,7 +94,31 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 ```
 
 目录引用会递归处理，并自动跳过 `.git`、`bin`、`obj`、`data`、`node_modules`、本地密钥文件、二进制及超限文件。
-MCP 与 Skill 的增删和启停会立即持久化到当前项目的 `.muagent/config/mcp.json` 与 `.muagent/config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。
+MCP 与 Skill 的增删和启停会由 APP 立即持久化到 APP 项目根的 `.muagent/config/mcp.json` 与 `.muagent/config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。CLI 不接受 `-d`、不创建 `.muagent`；它的当前目录只作为 `/add` 本地文件引用的基准。
+
+## 控制台执行与三种审批模式
+
+模型可通过 `local.execute_command` 调用 APP 所在机器的控制台程序。默认采用逐次审批，CLI 会显示可执行文件、参数和工作目录，并要求当前用户明确输入 `y`：
+
+```json
+{
+  "MuAgents": {
+    "CommandExecution": {
+      "ApprovalMode": "RequireApproval",
+      "AllowedCommands": [],
+      "ApprovalTimeoutSeconds": 120,
+      "MaxExecutionSeconds": 120,
+      "MaxOutputCharacters": 48000
+    }
+  }
+}
+```
+
+- `Denied`：完全禁止模型执行控制台命令。
+- `RequireApproval`：每次命令都向当前 CLI 用户询问，默认拒绝。
+- `Allowed`：模型可自动执行，建议只用于可信且隔离的开发环境。
+
+`AllowedCommands` 为空表示不额外限制；也可填写 `dotnet`、`git`、`pwsh.exe` 等允许项。工作目录只能是 APP 项目根或其子目录，临时目录和运行时缓存仍固定在项目 `.muagent/data/`。修改审批配置后重启 APP 生效。
 
 ## 发布与二进制启动
 
@@ -102,22 +129,28 @@ dotnet publish apps/MuAgents.App -c Release -r win-x64 --self-contained false -o
 dotnet publish apps/MuAgents.Cli -c Release -r win-x64 --self-contained false -o publish/cli
 ```
 
-发布完成后无需 `dotnet run`，可从任何目录直接运行 `.exe`。API 与 CLI 的 `-d` 应指向同一个项目：
+发布完成后无需 `dotnet run`，可从任何目录直接运行 `.exe`。只有 APP 使用 `-d`；CLI 通过 `--url` 连接 APP：
 
 ```powershell
 .\publish\app\MuAgents.App.exe -d D:\work\my-project --urls http://127.0.0.1:5000
-.\publish\cli\MuAgents.Cli.exe -d D:\work\my-project `
-  --url http://127.0.0.1:5000/ --user admin --bootstrap --tenant-name Local
+.\publish\cli\MuAgents.Cli.exe `
+  --url http://127.0.0.1:5000/
 ```
 
-Linux 发布时把运行时标识改成 `linux-x64`，二进制入口分别为 `MuAgents.App` 和 `MuAgents.Cli`。目标机器没有 .NET Runtime 时，将 `--self-contained false` 改为 `--self-contained true`。未指定 `-d` 时，程序使用当前终端目录；路径包含空格时请加引号。API 启动输出会列出项目根、状态目录以及本次实际加载的每个配置文件。
+Linux 发布时把运行时标识改成 `linux-x64`，二进制入口分别为 `MuAgents.App` 和 `MuAgents.Cli`。目标机器没有 .NET Runtime 时，将 `--self-contained false` 改为 `--self-contained true`。APP 未指定 `-d` 时使用当前终端目录；路径包含空格时请加引号。API 启动输出会列出项目根、状态目录以及本次实际加载的每个配置文件。
+
+服务器管理员可在 APP 停止后从项目本机修改指定用户密码；程序会安全读取两遍新密码，修改后直接退出，不启动 HTTP 服务：
+
+```powershell
+.\publish\app\MuAgents.App.exe -d D:\work\my-project --set-password admin
+```
 
 ## 可移植目录约束
 
-MuAgents 在进程最开始解析 `-d`，未提供时记录启动目录，并把结果作为项目根目录。程序二进制可以安装在其他位置，但所有可写状态只进入当前项目的 `.muagent/`：
+MuAgents APP 在进程最开始解析 `-d`，未提供时记录启动目录，并把结果作为项目根目录。程序二进制可以安装在其他位置，但 APP 的所有可写状态只进入当前项目的 `.muagent/`：
 
 ```text
-my-project/                       # 启动 API/CLI 时所在目录
+my-project/                       # APP 的 -d 项目目录或 APP 启动目录
 ├─ .muagent/                      # 本项目独立状态，已加入 .gitignore
 │  ├─ config/
 │  │  ├─ muagents.settings.json  # 模型、认证和 Web 配置
@@ -134,7 +167,7 @@ my-project/                       # 启动 API/CLI 时所在目录
 └─ ...                            # 项目源码和其他文件
 ```
 
-`/add .`、文件读取、图片和 Skill/MCP 相对路径以项目根目录解析；数据库、密钥、配置、临时目录和运行时缓存以 `.muagent/` 解析。所有可写路径如果逃逸 `.muagent/` 都会被拒绝。`TEMP`、`TMP`、`DOTNET_CLI_HOME` 和 NuGet 等缓存变量也会重定向到 `.muagent/data/`。
+APP 的文件读取、图片、控制台工作目录和 Skill/MCP 相对路径以 APP 项目根解析；数据库、密钥、配置、临时目录和运行时缓存以 `.muagent/` 解析。所有 APP 管理的可写状态如果逃逸 `.muagent/` 都会被拒绝。`TEMP`、`TMP`、`DOTNET_CLI_HOME` 和 NuGet 等缓存变量也会重定向到 `.muagent/data/`。CLI 的 `/add .` 则以 CLI 当前终端目录为准，文件内容通过认证 API 上传，不让 APP 按客户端路径读取磁盘。
 
 ## 文档
 

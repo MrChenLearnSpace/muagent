@@ -41,6 +41,29 @@ public sealed class RuntimeLaunchArgumentsTests
     }
 
     [Fact]
+    public void Parse_RemovesPasswordResetArgumentsFromWebHostArguments()
+    {
+        var directory = CreateDirectory("password-reset");
+
+        var result = RuntimeLaunchArguments.Parse(
+            ["-d", directory, "--set-password", "administrator", "--urls", "http://localhost:5001"]);
+
+        Assert.Equal("administrator", result.PasswordResetUserName);
+        Assert.Equal(new[] { "--urls", "http://localhost:5001" }, result.RemainingArguments);
+    }
+
+    [Fact]
+    public void Parse_AcceptsPasswordResetEqualsForm()
+    {
+        var directory = CreateDirectory("password-reset-equals");
+
+        var result = RuntimeLaunchArguments.Parse([$"--directory={directory}", "--set-password=admin"]);
+
+        Assert.Equal("admin", result.PasswordResetUserName);
+        Assert.Empty(result.RemainingArguments);
+    }
+
+    [Fact]
     public void Parse_RejectsMissingDirectory()
     {
         var missing = Path.Combine(TestPaths.NewDirectoryPath("missing-project"), "not-created");

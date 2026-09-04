@@ -5,20 +5,14 @@
 ## 1. 总体依赖关系
 
 ```text
-MuAgents.App / MuAgents.Cli
-        │
-        ├─ MuAgents.Hosting（依赖注入装配）
-        │      ├─ Core（智能体循环、上下文）
-        │      ├─ OpenAI（模型协议适配）
-        │      ├─ Persistence（SQLite）
-        │      ├─ Tools / Content / OCR / Web
-        │      ├─ Skills
-        │      └─ Mcp
-        │
-        └─ MuAgents.Abstractions（所有模块共享契约）
+MuAgents.Cli ──HTTP/NDJSON──> MuAgents.App ──> MuAgents.Hosting
+                                      ├─ Core / OpenAI / Persistence
+                                      ├─ Tools / Content / OCR / Web
+                                      ├─ Skills / Mcp
+                                      └─ MuAgents.Abstractions
 ```
 
-`MuAgents.Abstractions` 位于依赖底层；具体实现依赖抽象，`MuAgents.Hosting` 负责把实现注册到容器，`MuAgents.App` 只组合配置、中间件和 HTTP API。
+CLI 是独立的展示客户端，没有对运行时类库的项目引用。`MuAgents.Abstractions` 位于 APP 模块依赖底层；具体实现依赖抽象，`MuAgents.Hosting` 负责注册实现，`MuAgents.App` 组合配置、中间件和 HTTP API。完整组件图和工具审批时序见根目录 `DESIGN.md`。
 
 ## 2. 根目录
 
@@ -28,7 +22,7 @@ MuAgents.App / MuAgents.Cli
 | `Directory.Build.props` | 全解决方案共享编译设置，例如目标框架、可空引用和隐式 using。 |
 | `README.md` | 项目首页，提供能力概览、快速启动、目录约束和文档导航。 |
 | `DESIGN.md` | 架构设计、模块边界、安全模型和核心运行流程。 |
-| `todo.md` | 项目后续任务记录文件；当前为空，供维护者补充未完成事项。 |
+| `todo.md` | 项目后续任务记录文件，由维护者记录未完成事项。 |
 | `.gitignore` | 排除构建产物、运行数据、本地密钥配置和编辑器文件。 |
 
 ## 3. 应用入口 `apps/`
@@ -38,9 +32,9 @@ MuAgents.App / MuAgents.Cli
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.App.csproj` | ASP.NET Core API 项目定义及对各功能模块的引用。 |
-| `Program.cs` | API 主入口：解析 `-d` 或使用启动目录作为项目根，创建并加载 `.muagent/config` 项目配置，打印配置清单，注册认证/授权/限流、初始化数据库并映射全部 `/api/v1` 路由；提供运行目录、模型状态、上下文压缩、MCP/Skill 动态管理及 NDJSON 流。 |
-| `Authentication.cs` | 本地认证服务：密码哈希校验、JWT 签发、首次管理员初始化、用户/租户/成员管理；也定义认证配置和登录会话模型。 |
-| `appsettings.json` | 非敏感运行默认值，包括智能体限制、上下文预算、SQLite、内容处理、OCR、Skill、Web、MCP 和日志。 |
+| `Program.cs` | API 主入口：解析 `-d` 和本机 `--set-password` 管理参数，创建并加载 `.muagent/config` 项目配置，打印配置清单，注册认证/授权/限流、初始化数据库并映射全部 `/api/v1` 路由；提供运行目录、命令审批、模型状态、上下文压缩、MCP/Skill 动态管理及 NDJSON 流。 |
+| `Authentication.cs` | 本地认证服务：无密码首次管理员、密码哈希校验与本机重设、JWT 签发、用户/租户/成员管理；也定义认证配置和登录会话模型。 |
+| `appsettings.json` | 非敏感运行默认值，包括智能体限制、控制台三档审批、上下文预算、SQLite、内容处理、OCR、Skill、Web、MCP 和日志。 |
 | `muagents.settings.json` | 随程序发布的模型、Web 搜索和认证模板；每个项目首次启动时复制到 `.muagent/config/muagents.settings.json`。 |
 
 ### 3.2 `MuAgents.Cli`
@@ -48,8 +42,8 @@ MuAgents.App / MuAgents.Cli
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.Cli.csproj` | 交互式命令行客户端项目定义。 |
-| `Program.cs` | 首先解析 `-d` 并固定项目根、把可写缓存放入 `.muagent`，之后登录并分派文件上下文、MCP/Skill 管理和 `/compact` 等命令；`/status` 同时显示客户端与服务端的目录和已加载配置。 |
-| `FileReferenceSet.cs` | 管理 CLI 文件上下文：相对路径基于项目根，递归遍历时排除 `.muagent`、生成目录、敏感/二进制文件，执行文件数与字节上限并生成发送快照。 |
+| `Program.cs` | 默认以无密码 `admin` 自动初始化/登录，`--setup-password` 时才首次设置密码，已有密码时按需提示；此外只负责 HTTP/NDJSON 展示、控制台逐次审批、文件上下文、MCP/Skill 管理和 `/compact` 等命令。不接受 `-d`，不初始化 APP 路径或创建 `.muagent`。 |
+| `FileReferenceSet.cs` | 管理 CLI 文件上下文：相对路径基于 CLI 当前终端目录，递归遍历时排除 `.muagent`、生成目录、敏感/二进制文件，执行文件数与字节上限并生成发送快照。 |
 | `SlashCommandLine.cs` | 斜杠命令目录和交互式行编辑器：统一生成帮助与 Tab 候选，支持唯一命令补全、共同前缀、候选列表、光标移动和输入历史；重定向输入时兼容普通 `ReadLine`。 |
 
 ## 4. 公共抽象 `src/MuAgents.Abstractions`
@@ -59,14 +53,14 @@ MuAgents.App / MuAgents.Cli
 | `MuAgents.Abstractions.csproj` | 零业务实现的基础契约项目，其他模块通过它解耦。 |
 | `Messages.cs` | 统一消息模型：角色、文本、图片、工具调用和工具结果消息片段，以及消息元数据。 |
 | `Models.cs` | 模型调用请求、参数、能力描述、流式模型事件、模型接口及便于测试的委托实现。 |
-| `Tools.cs` | 工具定义、调用、结果、执行上下文、单工具接口和工具网关接口。 |
+| `Tools.cs` | 工具定义、调用、结果、带精确调用 ID 的执行上下文、单工具接口、独立超时标记和工具网关接口。 |
 | `Persistence.cs` | 会话实体、会话存储接口、原子替换压缩历史的契约、统一错误类别和领域异常。 |
 | `Identity.cs` | 用户、租户、成员关系实体及身份存储接口。 |
 | `Content.cs` | 内容描述、读取选项、结构化文档、内容读取器、图片处理器和 OCR 接口。 |
 | `Skills.cs` | Skill 清单、脚本执行策略、目录接口、脚本请求和执行结果。 |
 | `Web.cs` | Web 搜索结果、搜索接口、网页内容和安全抓取接口。 |
-| `RuntimePaths.cs` | 项目隔离路径边界：记录程序安装目录和启动项目目录，把状态根固定为 `<项目>/.muagent`，规范化并验证写路径，并为 API、CLI 和子进程重定向 .NET/NuGet/临时缓存。 |
-| `RuntimeLaunchArguments.cs` | API/CLI 共用启动参数解析：处理 `-d`、`--directory` 及等号形式，相对路径基于启动终端解析，并从剩余应用参数中移除目录选项。 |
+| `RuntimePaths.cs` | APP 项目隔离路径边界：记录程序安装目录和 APP 项目目录，把状态根固定为 `<项目>/.muagent`，规范化并验证写路径，并为 APP 和子进程重定向 .NET/NuGet/临时缓存。 |
+| `RuntimeLaunchArguments.cs` | APP 启动参数解析：处理 `-d`、`--directory`、本机 `--set-password` 及等号形式，相对路径基于启动终端解析，并从 ASP.NET Core 剩余参数中移除这些 APP 专用选项。 |
 | `Telemetry.cs` | 全局 `ActivitySource` 与 `Meter` 名称和实例，供运行时与宿主统一采集。 |
 
 ## 5. 核心运行时 `src/MuAgents.Core`
@@ -74,7 +68,7 @@ MuAgents.App / MuAgents.Cli
 | 文件 | 说明 |
 | --- | --- |
 | `MuAgents.Core.csproj` | 核心智能体运行时项目定义。 |
-| `AgentRuntime.cs` | 智能体主循环：加载历史、构造上下文、调用模型、转发流式事件、并发执行工具、落库结果、限制迭代并记录遥测；也查询会话 Token 状态，并在独占锁内持久化自动/手动压缩结果。 |
+| `AgentRuntime.cs` | 智能体主循环：加载历史、构造上下文、调用模型、转发含调用参数的工具开始事件、并发执行工具、落库结果、限制迭代并记录遥测；也查询会话 Token 状态，并在独占锁内持久化自动/手动压缩结果。 |
 | `ContextManagement.cs` | Token 近似估算、上下文预算规划和历史压缩；自动压缩保留系统消息及近期轮次，手动压缩把全部历史折叠并收紧到指定硬目标。 |
 
 ## 6. 模型适配 `src/MuAgents.OpenAI`
@@ -102,6 +96,7 @@ MuAgents.App / MuAgents.Cli
 | `ToolGatewayOptions.cs` | 工具调用超时、并发数和最大结果字符数配置。 |
 | `ToolGateway.cs` | 按命名空间注册工具，校验调用参数，并以信号量限制并发；统一处理超时、异常、截断和遥测。 |
 | `BuiltInTools.cs` | 内置基础工具，例如 UTC 时间和受控文本处理，作为工具协议的最小可用实现。 |
+| `CommandExecutionTool.cs` | `local.execute_command` 控制台工具、`Denied`/`RequireApproval`/`Allowed` 三档策略及审批协调器；使用参数数组、项目内工作目录、命令白名单、独立审批/执行超时、输出限制和项目内临时环境。 |
 
 ## 9. 内容与 OCR
 
@@ -178,11 +173,13 @@ MuAgents.App / MuAgents.Cli
 | `SecurityBoundaryTests.cs` | 验证文件根目录、图片路径、URL/SSRF 和脚本安全边界。 |
 | `SqliteConversationStoreTests.cs` | 验证 SQLite 初始化、会话、消息持久化和租户隔离。 |
 | `TelemetryTests.cs` | 验证 Activity 与 Meter 的关键遥测信号。 |
-| `ToolGatewayTests.cs` | 验证工具参数、调用结果、超时、并发和截断。 |
-| `EventEnvelopeTests.cs` | 验证 NDJSON 外壳和事件数据统一输出 camelCase，避免 CLI 因字段大小写失配而丢失流内容。 |
+| `ToolGatewayTests.cs` | 验证工具参数、调用结果、精确调用 ID 传递、超时、并发和截断。 |
+| `EventEnvelopeTests.cs` | 验证 NDJSON 外壳和事件数据统一输出 camelCase，并验证审批客户端能收到工具参数。 |
+| `CommandExecutionToolTests.cs` | 验证控制台禁止、逐次批准/拒绝、自动允许和工作目录越界拒绝。 |
 | `FileReferenceSetTests.cs` | 验证目录递归引用、生成/敏感文件排除和按目录移除。 |
 | `DynamicConfigurationTests.cs` | 验证 MCP 与 Skill 添加、删除、启停、持久化、重新加载和默认目录去重。 |
-| `RuntimeLaunchArgumentsTests.cs` | 验证默认项目目录、相对 `-d`、长参数形式、参数透传和不存在目录拒绝。 |
+| `RuntimeLaunchArgumentsTests.cs` | 验证默认项目目录、相对 `-d`、密码修改参数、长参数形式、参数透传和不存在目录拒绝。 |
+| `CliOptionsTests.cs` | 验证 CLI 默认无密码 `admin` 配置、`--setup-password` 和旧 `--bootstrap` 兼容别名。 |
 | `SlashCommandCompletionTests.cs` | 验证斜杠命令的唯一前缀补全、多候选返回，以及带参数或普通文本不被误改。 |
 | `TestPaths.cs` | 在测试项目的 `.muagent/data/tests` 下创建独立临时目录，确保测试状态遵守项目隔离。 |
 
