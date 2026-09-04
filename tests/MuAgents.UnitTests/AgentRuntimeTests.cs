@@ -9,6 +9,42 @@ namespace MuAgents.UnitTests;
 public sealed class AgentRuntimeTests
 {
     [Fact]
+    public async Task CompactAsync_PersistsCheckpointWithinOneThirdOfMaximum()
+    {
+        var store = new MemoryConversationStore();
+        var conversation = await store.CreateAsync("tenant", "user", null);
+        for (var index = 0; index < 30; index++)
+            await store.AppendMessageAsync(
+                "tenant",
+                conversation.Id,
+                AgentMessage.Text(index % 2 == 0 ? AgentRole.User : AgentRole.Assistant, new string('x', 400)));
+        var contextOptions = Options.Create(new ContextOptions
+        {
+            MaxContextTokens = 600,
+            ReservedOutputTokens = 64,
+            SafetyMarginTokens = 32
+        });
+        var runtime = new AgentRuntime(
+            new DelegateChatModel((_, _) => Empty()),
+            new FakeGateway(),
+            store,
+            new ContextManager(new ApproximateTokenEstimator(), contextOptions),
+            Options.Create(new AgentOptions()),
+            contextOptions,
+            NullLogger<AgentRuntime>.Instance);
+
+        var status = await runtime.CompactAsync(
+            "tenant",
+            conversation.Id,
+            new ModelParameters("test"));
+
+        Assert.Equal(200, status.CompactTargetTokens);
+        Assert.InRange(status.CurrentTokens, 1, status.CompactTargetTokens);
+        var checkpoint = Assert.Single(await store.GetMessagesAsync("tenant", conversation.Id));
+        Assert.Equal("compaction-checkpoint", checkpoint.Metadata?.Properties?["kind"]);
+    }
+
+    [Fact]
     public async Task RunAsync_ExecutesToolAndContinuesModelLoop()
     {
         var store = new MemoryConversationStore();
@@ -21,6 +57,7 @@ public sealed class AgentRuntimeTests
             store,
             new ContextManager(new ApproximateTokenEstimator(), Options.Create(new ContextOptions())),
             Options.Create(new AgentOptions { MaxToolIterations = 2 }),
+            Options.Create(new ContextOptions()),
             NullLogger<AgentRuntime>.Instance);
 
         var events = new List<AgentEvent>();
@@ -55,6 +92,12 @@ public sealed class AgentRuntimeTests
         await Task.Yield();
     }
 
+    private static async IAsyncEnumerable<ModelEvent> Empty()
+    {
+        await Task.Yield();
+        yield break;
+    }
+
     private sealed class FakeGateway : IToolGateway
     {
         public IReadOnlyList<ToolDefinition> Definitions { get; } = [];
@@ -85,6 +128,13 @@ public sealed class AgentRuntimeTests
         public Task AppendMessageAsync(string tenantId, string conversationId, AgentMessage message, CancellationToken cancellationToken = default)
         {
             _items[(tenantId, conversationId)].Messages.Add(message);
+            return Task.CompletedTask;
+        }
+        public Task ReplaceMessagesAsync(string tenantId, string conversationId, IReadOnlyList<AgentMessage> messages, CancellationToken cancellationToken = default)
+        {
+            var item = _items[(tenantId, conversationId)];
+            item.Messages.Clear();
+            item.Messages.AddRange(messages);
             return Task.CompletedTask;
         }
     }

@@ -7,9 +7,39 @@ namespace MuAgents.UnitTests;
 public sealed class SqliteConversationStoreTests
 {
     [Fact]
+    public async Task ReplaceMessages_IsAtomicAndPreservesRequestedOrder()
+    {
+        var database = TestPaths.NewFile(".db");
+        try
+        {
+            var store = new SqliteConversationStore(Options.Create(
+                new PersistenceOptions { ConnectionString = $"Data Source={database};Pooling=False" }));
+            var conversation = await store.CreateAsync("tenant", "user", "compact");
+            await store.AppendMessageAsync("tenant", conversation.Id, AgentMessage.Text(AgentRole.User, "old"));
+            var replacement = new[]
+            {
+                AgentMessage.Text(AgentRole.System, "checkpoint"),
+                AgentMessage.Text(AgentRole.User, "recent")
+            };
+
+            await store.ReplaceMessagesAsync("tenant", conversation.Id, replacement);
+
+            var actual = await store.GetMessagesAsync("tenant", conversation.Id);
+            Assert.Equal(replacement.Select(message => message.Id), actual.Select(message => message.Id));
+            await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+                store.ReplaceMessagesAsync("other-tenant", conversation.Id, replacement));
+        }
+        finally
+        {
+            foreach (var path in new[] { database, database + "-wal", database + "-shm" })
+                if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task QueriesAreTenantScoped()
     {
-        var database = Path.Combine(Path.GetTempPath(), $"muagents-{Guid.NewGuid():N}.db");
+        var database = TestPaths.NewFile(".db");
         try
         {
             var store = new SqliteConversationStore(Options.Create(

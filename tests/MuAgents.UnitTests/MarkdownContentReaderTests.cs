@@ -8,7 +8,7 @@ public sealed class MarkdownContentReaderTests
     [Fact]
     public async Task ReadAsync_ExtractsFrontMatterAndHeadings()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"muagents-{Guid.NewGuid():N}.md");
+        var path = TestPaths.NewFile(".md");
         try
         {
             await File.WriteAllTextAsync(path, "---\ntitle: Sample\n---\n# First\nBody\n## Second\nMore");

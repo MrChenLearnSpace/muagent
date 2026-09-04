@@ -3,6 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Content;
 
+/// <summary>读取常见纯文本格式并按配置字符数分块的内容读取器。</summary>
 public sealed class TextContentReader : IContentReader
 {
     private static readonly string[] Extensions = [".txt", ".log", ".csv", ".json", ".xml", ".yaml", ".yml"];

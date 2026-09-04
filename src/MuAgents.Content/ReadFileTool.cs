@@ -4,6 +4,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Content;
 
+/// <summary>read_file 工具的工作区白名单、字符、页数和 OCR 限制。</summary>
 public sealed class FileToolOptions
 {
     public List<string> WorkspaceRoots { get; set; } = [];
@@ -12,6 +13,7 @@ public sealed class FileToolOptions
     public bool EnableOcr { get; set; } = true;
 }
 
+/// <summary>在允许工作区内读取文本、Markdown 或 PDF，并返回统一结构化 JSON 的工具。</summary>
 public sealed class ReadFileTool(
     IContentReaderRegistry readers,
     IOptions<FileToolOptions> options) : IAgentTool
@@ -31,10 +33,11 @@ public sealed class ReadFileTool(
     {
         if (!arguments.TryGetProperty("path", out var value) || string.IsNullOrWhiteSpace(value.GetString()))
             return new ToolResult("path is required.", true);
-        var fullPath = Path.GetFullPath(value.GetString()!);
+        var fullPath = Path.GetFullPath(value.GetString()!, RuntimePaths.RootDirectory);
+        // 即使模型构造了 .. 路径，也必须先规范化，再用相对路径判断真实目录边界。
         var roots = _options.WorkspaceRoots.Count == 0
-            ? new[] { Path.GetFullPath(Directory.GetCurrentDirectory()) }
-            : _options.WorkspaceRoots.Select(Path.GetFullPath);
+            ? new[] { RuntimePaths.RootDirectory }
+            : _options.WorkspaceRoots.Select(root => Path.GetFullPath(root, RuntimePaths.RootDirectory));
         if (!roots.Any(root => IsWithin(fullPath, root)))
             throw new MuAgentException(MuAgentErrorCategory.SecurityDenied, "File path is outside configured workspace roots.");
         var document = await readers.ReadAsync(
@@ -49,7 +52,11 @@ public sealed class ReadFileTool(
             document.Metadata,
             sections = document.Sections.Select(section => new
             {
-                section.Page, section.Heading, section.Confidence, section.Metadata, section.Text
+                section.Page,
+                section.Heading,
+                section.Confidence,
+                section.Metadata,
+                section.Text
             })
         }));
     }

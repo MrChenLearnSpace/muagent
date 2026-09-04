@@ -14,13 +14,16 @@ using MuAgents.Web;
 
 namespace MuAgents.Hosting;
 
+/// <summary>把 MuAgents 全部配置、基础设施和扩展能力注册到宿主依赖注入容器。</summary>
 public static class ServiceCollectionExtensions
 {
+    /// <summary>绑定并验证 MuAgents 配置，同时注册运行时所需的所有默认实现。</summary>
     public static IServiceCollection AddMuAgents(
         this IServiceCollection services,
         IConfiguration configuration)
     {
         var section = configuration.GetSection("MuAgents");
+        // 核心上限在宿主启动时校验，避免错误配置等到长任务执行中途才暴露。
         services.AddOptions<AgentOptions>()
             .Bind(section.GetSection("Agent"))
             .Validate(options => options.MaxToolIterations is >= 0 and <= 100,
@@ -62,6 +65,7 @@ public static class ServiceCollectionExtensions
         services.AddOptions<SkillOptions>().Bind(section.GetSection("Skills"));
         services.AddOptions<McpOptions>().Bind(section.GetSection("Mcp"));
 
+        // 模型适配器自行使用取消令牌控制超时，禁用 HttpClient 的第二套超时可保留准确错误分类。
         services.AddHttpClient<IChatModel, OpenAiCompatibleChatModel>((provider, client) =>
         {
             var model = provider.GetRequiredService<IOptions<OpenAiCompatibleOptions>>().Value;
@@ -86,9 +90,12 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient<IWebSearchProvider, JsonWebSearchProvider>(client => client.Timeout = TimeSpan.FromSeconds(30));
         services.AddSingleton<IAgentTool, WebFetchTool>();
         services.AddSingleton<IAgentTool, WebSearchTool>();
-        services.AddSingleton<ISkillCatalog, FileSystemSkillCatalog>();
+        services.AddSingleton<SkillConfigurationStore>();
+        services.AddSingleton<FileSystemSkillCatalog>();
+        services.AddSingleton<ISkillCatalog>(provider => provider.GetRequiredService<FileSystemSkillCatalog>());
         services.AddSingleton<IScriptRunner, ProcessScriptRunner>();
         services.AddHttpClient("MuAgents.Mcp", client => client.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddSingleton<McpConfigurationStore>();
         services.AddSingleton<IMcpClientManager, McpClientManager>();
         services.AddSingleton<IAgentTool, McpInvokeTool>();
         services.AddSingleton<AgentRuntime>();

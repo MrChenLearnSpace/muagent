@@ -5,6 +5,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Skills;
 
+/// <summary>执行通过策略、运行时和路径校验的 Skill 脚本，并限制超时及输出。</summary>
 public sealed class ProcessScriptRunner(IOptions<SkillOptions> options) : IScriptRunner
 {
     private readonly SkillOptions _options = options.Value;
@@ -13,6 +14,7 @@ public sealed class ProcessScriptRunner(IOptions<SkillOptions> options) : IScrip
         ScriptRunRequest request,
         CancellationToken cancellationToken = default)
     {
+        // 先执行宿主全局策略，再检查 Skill 自身声明；两层任一不允许都不能启动进程。
         if (_options.ScriptPolicy == ScriptExecutionPolicy.Denied)
             throw Security("Skill script execution is denied by policy.");
         if (_options.ScriptPolicy == ScriptExecutionPolicy.RequireApproval && !request.IsApproved)
@@ -25,19 +27,20 @@ public sealed class ProcessScriptRunner(IOptions<SkillOptions> options) : IScrip
             (request.Skill.AllowedRuntimes.Count > 0 && !request.Skill.AllowedRuntimes.Contains(runtime, StringComparer.OrdinalIgnoreCase)))
             throw Security($"Script runtime '{runtime}' is not allowed.");
 
-        var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"muagents-skill-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(temporaryDirectory);
+        // 子进程工作目录和三种临时目录变量全部指向程序根目录，杜绝运行时回落到系统 Temp。
+        var temporaryDirectory = RuntimePaths.CreateTemporaryDirectory("skills");
         try
         {
             var startInfo = new ProcessStartInfo
             {
                 FileName = runtime,
-                WorkingDirectory = temporaryDirectory,
+                WorkingDirectory = temporaryDirectory.DirectoryPath,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            // 使用 ArgumentList 而不是拼接命令行，避免脚本参数被 Shell 二次解释。
             foreach (var argument in prefixArguments) startInfo.ArgumentList.Add(argument);
             startInfo.ArgumentList.Add(script);
             foreach (var argument in request.Arguments) startInfo.ArgumentList.Add(argument);
@@ -46,8 +49,7 @@ public sealed class ProcessScriptRunner(IOptions<SkillOptions> options) : IScrip
             startInfo.Environment.Clear();
             if (inheritedPath is not null) startInfo.Environment["PATH"] = inheritedPath;
             if (systemRoot is not null) startInfo.Environment["SystemRoot"] = systemRoot;
-            startInfo.Environment["TEMP"] = temporaryDirectory;
-            startInfo.Environment["TMP"] = temporaryDirectory;
+            RuntimePaths.ConfigureChildProcess(startInfo, temporaryDirectory.DirectoryPath);
 
             using var process = new Process { StartInfo = startInfo };
             if (!process.Start()) throw new MuAgentException(MuAgentErrorCategory.ToolFailure, "Script process could not start.");
@@ -65,6 +67,7 @@ public sealed class ProcessScriptRunner(IOptions<SkillOptions> options) : IScrip
             var error = await errorTask.ConfigureAwait(false);
             var truncated = output.Length > _options.MaxScriptOutputCharacters || error.Length > _options.MaxScriptOutputCharacters;
             await using var scriptStream = File.OpenRead(script);
+            // 返回脚本哈希用于审计“批准并执行的究竟是哪一版文件”。
             var hash = await SHA256.HashDataAsync(scriptStream, cancellationToken).ConfigureAwait(false);
             return new ScriptRunResult(
                 process.ExitCode,
@@ -73,10 +76,7 @@ public sealed class ProcessScriptRunner(IOptions<SkillOptions> options) : IScrip
                 truncated,
                 Convert.ToHexString(hash).ToLowerInvariant());
         }
-        finally
-        {
-            if (Directory.Exists(temporaryDirectory)) Directory.Delete(temporaryDirectory, recursive: true);
-        }
+        finally { temporaryDirectory.Dispose(); }
     }
 
     private (string Runtime, string[] PrefixArguments) Runtime(string path) => Path.GetExtension(path).ToLowerInvariant() switch

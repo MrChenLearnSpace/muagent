@@ -3,14 +3,19 @@ using System.Diagnostics.Metrics;
 
 namespace MuAgents.Abstractions;
 
+/// <summary>
+/// MuAgents 全局遥测入口。名称保持稳定，使宿主无需引用具体实现即可订阅活动和指标。
+/// </summary>
 public static class MuAgentsTelemetry
 {
+    /// <summary>ActivitySource 与 Meter 共用的逻辑名称。</summary>
     public const string SourceName = "MuAgents";
     public const string Version = "0.1.0";
 
     public static readonly ActivitySource Activities = new(SourceName, Version);
     public static readonly Meter Meter = new(SourceName, Version);
 
+    // 指标描述使用英文是为了与 OpenTelemetry 后端和跨语言仪表盘保持一致。
     public static readonly Counter<long> AgentRuns = Meter.CreateCounter<long>(
         "muagents.agent.runs", description: "Number of agent runs started.");
     public static readonly Counter<long> AgentFailures = Meter.CreateCounter<long>(

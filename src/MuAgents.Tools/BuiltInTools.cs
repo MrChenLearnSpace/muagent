@@ -3,6 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Tools;
 
+/// <summary>返回 UTC 时间的无副作用内置工具，用于基础工具调用和连通性验证。</summary>
 public sealed class CurrentTimeTool : IAgentTool
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""

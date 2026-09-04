@@ -3,6 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Content;
 
+/// <summary>按 Markdown ATX 标题切分章节，并遵守字符预算的内容读取器。</summary>
 public sealed class MarkdownContentReader : IContentReader
 {
     public bool CanRead(ContentDescriptor content) =>

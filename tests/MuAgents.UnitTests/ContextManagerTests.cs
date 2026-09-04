@@ -7,6 +7,30 @@ namespace MuAgents.UnitTests;
 public sealed class ContextManagerTests
 {
     [Fact]
+    public void CompactToTarget_ReducesContextToRequestedOneThirdBudget()
+    {
+        var options = Options.Create(new ContextOptions
+        {
+            MaxContextTokens = 600,
+            ReservedOutputTokens = 64,
+            SafetyMarginTokens = 16,
+            RecentTurnsToKeep = 2
+        });
+        var manager = new ContextManager(new ApproximateTokenEstimator(), options);
+        var messages = Enumerable.Range(0, 30)
+            .Select(index => AgentMessage.Text(
+                index % 2 == 0 ? AgentRole.User : AgentRole.Assistant,
+                new string((char)('a' + index % 20), 160)))
+            .ToArray();
+
+        var plan = manager.CompactToTarget(messages, [], new ModelParameters("test"), 200);
+
+        Assert.True(plan.WasCompacted);
+        Assert.True(plan.EstimatedTokens <= 200);
+        Assert.Single(plan.Messages);
+    }
+
+    [Fact]
     public void Prepare_Compacts_WhenThresholdIsReached()
     {
         var manager = new ContextManager(

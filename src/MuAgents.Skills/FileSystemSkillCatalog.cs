@@ -4,18 +4,35 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Skills;
 
-public sealed partial class FileSystemSkillCatalog(IOptions<SkillOptions> options) : ISkillCatalog
+/// <summary>Skill 清单及其当前启用状态。</summary>
+public sealed record SkillCatalogEntry(SkillManifest Manifest, bool Enabled);
+
+/// <summary>从受控目录发现和解析 SKILL.md，并安全读取 Skill 引用文件。</summary>
+public sealed partial class FileSystemSkillCatalog(
+    IOptions<SkillOptions> options,
+    SkillConfigurationStore configuration) : ISkillCatalog
 {
     private readonly SkillOptions _options = options.Value;
 
-    public async Task<IReadOnlyList<SkillManifest>> DiscoverAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<SkillManifest>> DiscoverAsync(CancellationToken cancellationToken = default) =>
+        (await DiscoverAllAsync(cancellationToken).ConfigureAwait(false))
+        .Where(entry => entry.Enabled)
+        .Select(entry => entry.Manifest)
+        .ToArray();
+
+    public async Task<IReadOnlyList<SkillCatalogEntry>> DiscoverAllAsync(CancellationToken cancellationToken = default)
     {
         var skills = new Dictionary<string, SkillManifest>(StringComparer.OrdinalIgnoreCase);
-        foreach (var configuredDirectory in _options.Directories)
+        // 相对目录基于宿主已固定的程序根目录，因此默认 skills 不会随启动终端位置漂移。
+        var settings = configuration.Snapshot();
+        foreach (var configuredDirectory in settings.Directories)
         {
-            var root = Path.GetFullPath(configuredDirectory);
+            var root = Path.GetFullPath(configuredDirectory, RuntimePaths.RootDirectory);
             if (!Directory.Exists(root)) continue;
-            foreach (var directory in Directory.EnumerateDirectories(root))
+            var directories = File.Exists(Path.Combine(root, "SKILL.md"))
+                ? new[] { root }
+                : Directory.EnumerateDirectories(root);
+            foreach (var directory in directories)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var skillFile = Path.Combine(directory, "SKILL.md");
@@ -25,7 +42,12 @@ public sealed partial class FileSystemSkillCatalog(IOptions<SkillOptions> option
                     throw new MuAgentException(MuAgentErrorCategory.Configuration, $"Duplicate skill '{manifest.Name}'.");
             }
         }
-        return skills.Values.OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        return skills.Values
+            .OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(skill => new SkillCatalogEntry(
+                skill,
+                !settings.DisabledSkills.Contains(skill.Name, StringComparer.OrdinalIgnoreCase)))
+            .ToArray();
     }
 
     public async Task<SkillManifest?> GetAsync(string name, CancellationToken cancellationToken = default) =>
@@ -48,9 +70,11 @@ public sealed partial class FileSystemSkillCatalog(IOptions<SkillOptions> option
         if (Path.IsPathRooted(relativePath)) throw Security("Skill path must be relative.");
         var normalizedRoot = Path.GetFullPath(root);
         var path = Path.GetFullPath(Path.Combine(normalizedRoot, relativePath));
+        // 先规范化再计算相对路径，阻断 ..、绝对路径和相似目录名前缀绕过。
         var relative = Path.GetRelativePath(normalizedRoot, path);
         if (relative == ".." || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) || Path.IsPathRooted(relative))
             throw Security("Skill path traversal was denied.");
+        // 路径字符串位于目录内仍不够，符号链接的最终目标也必须留在 Skill 根目录。
         var info = new FileInfo(path);
         if (info.Exists && info.LinkTarget is not null)
         {

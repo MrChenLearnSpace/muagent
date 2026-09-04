@@ -3,6 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Content;
 
+/// <summary>按照注册顺序选择支持输入的读取器，并在无匹配格式时返回统一内容错误。</summary>
 public sealed class ContentReaderRegistry(
     IEnumerable<IContentReader> readers,
     IOptions<ContentOptions> options) : IContentReaderRegistry
@@ -15,7 +16,7 @@ public sealed class ContentReaderRegistry(
         ReadOptions options,
         CancellationToken cancellationToken = default)
     {
-        var fullPath = Path.GetFullPath(content.Source);
+        var fullPath = Path.GetFullPath(content.Source, RuntimePaths.RootDirectory);
         var file = new FileInfo(fullPath);
         if (!file.Exists) throw new FileNotFoundException("Content file was not found.", fullPath);
         if (file.Length > _options.MaxFileBytes)

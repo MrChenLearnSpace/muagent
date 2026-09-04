@@ -5,9 +5,10 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Persistence;
 
+/// <summary>使用 SQLite 持久化用户、租户、成员关系和登录审计的身份存储。</summary>
 public sealed class SqliteIdentityStore(IOptions<PersistenceOptions> options) : IIdentityStore
 {
-    private readonly string _connectionString = options.Value.ConnectionString;
+    private readonly string _connectionString = options.Value.ResolveConnectionString();
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private bool _initialized;
 
@@ -87,6 +88,7 @@ public sealed class SqliteIdentityStore(IOptions<PersistenceOptions> options) : 
         var tenantId = Guid.NewGuid().ToString("N");
         var now = DateTimeOffset.UtcNow;
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        // 首次用户、首个租户和 Owner 关系必须原子创建；任何一步失败都会整体回滚。
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;

@@ -3,6 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Mcp;
 
+/// <summary>统一的 MCP 调用入口，根据参数中的服务名和工具名转发远程调用。</summary>
 public sealed class McpInvokeTool(IMcpClientManager manager) : IAgentTool
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""

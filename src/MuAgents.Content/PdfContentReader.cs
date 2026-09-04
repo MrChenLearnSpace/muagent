@@ -3,6 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Content;
 
+/// <summary>组合 Poppler 文本提取、页面渲染和可选 OCR 的 PDF 内容读取器。</summary>
 public sealed class PdfContentReader(
     IOcrEngine ocr,
     IOptions<ContentOptions> options) : IContentReader
@@ -38,6 +39,7 @@ public sealed class PdfContentReader(
             cancellationToken.ThrowIfCancellationRequested();
             var page = index + 1;
             var pageText = pages[index].Trim();
+            // 文本层内容过少通常表示扫描页；只在这种情况下做昂贵的渲染和 OCR。
             if (NonWhitespaceCount(pageText) < 40 && options.EnableOcr)
             {
                 var ocrResult = await RenderAndRecognizeAsync(content.Source, page, options, cancellationToken)
@@ -90,11 +92,11 @@ public sealed class PdfContentReader(
         ReadOptions options,
         CancellationToken cancellationToken)
     {
-        var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"muagents-pdf-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(temporaryDirectory);
+        // 每页使用独立目录，既避免并发文件名冲突，也保证异常时能整体清理中间图片。
+        var temporaryDirectory = RuntimePaths.CreateTemporaryDirectory("pdf");
+        var outputPrefix = Path.Combine(temporaryDirectory.DirectoryPath, $"page-{page}");
         try
         {
-            var outputPrefix = Path.Combine(temporaryDirectory, $"page-{page}");
             var render = await ExternalProcess.RunAsync(
                 _options.PdfRenderExecutable,
                 ["-png", "-r", options.OcrDpi.ToString(), "-f", page.ToString(), "-l", page.ToString(), "-singlefile", pdfPath, outputPrefix],
@@ -109,10 +111,7 @@ public sealed class PdfContentReader(
                 outputPrefix + ".png", page, options.OcrLanguages ?? ["chi_sim", "eng"], cancellationToken)
                 .ConfigureAwait(false);
         }
-        finally
-        {
-            if (Directory.Exists(temporaryDirectory)) Directory.Delete(temporaryDirectory, recursive: true);
-        }
+        finally { temporaryDirectory.Dispose(); }
     }
 
     private static int NonWhitespaceCount(string value) => value.Count(character => !char.IsWhiteSpace(character));

@@ -6,17 +6,26 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using MuAgents.Abstractions;
 
+/// <summary>本地 JWT、Cookie、密码规则和 Data Protection 密钥目录配置。</summary>
 public sealed class AuthenticationOptions
 {
+    /// <summary>JWT 签发者。</summary>
     public string Issuer { get; set; } = "MuAgents";
+    /// <summary>JWT 目标受众。</summary>
     public string Audience { get; set; } = "MuAgents.Api";
+    /// <summary>HMAC-SHA256 签名密钥，启动验证要求至少 32 个字符。</summary>
     public string JwtSigningKey { get; set; } = string.Empty;
+    /// <summary>访问令牌有效分钟数。</summary>
     public int AccessTokenMinutes { get; set; } = 60;
+    /// <summary>持久 Cookie 有效天数。</summary>
     public int CookieDays { get; set; } = 7;
+    /// <summary>新密码最少字符数。</summary>
     public int MinimumPasswordLength { get; set; } = 12;
+    /// <summary>Data Protection 密钥目录，必须位于程序根目录内。</summary>
     public string DataProtectionKeysPath { get; set; } = "data/keys";
 }
 
+/// <summary>一次成功登录生成的用户、租户身份、ClaimsPrincipal 和 JWT。</summary>
 public sealed record AuthenticatedSession(
     UserAccount User,
     TenantMembership Membership,
@@ -24,18 +33,21 @@ public sealed record AuthenticatedSession(
     string AccessToken,
     DateTimeOffset ExpiresAt);
 
+/// <summary>负责输入校验、密码哈希、租户选择、登录审计和 JWT 签发的本地认证服务。</summary>
 public sealed class LocalAuthenticationService(
     IIdentityStore store,
     IPasswordHasher<UserAccount> passwordHasher,
     IOptions<AuthenticationOptions> options)
 {
     private readonly AuthenticationOptions _options = options.Value;
+    // 未找到用户时仍执行一次真实哈希校验，缩小“用户名是否存在”的计时侧信道。
     private readonly UserAccount _dummyUser = new(
         "dummy", "dummy", "DUMMY", "", false, true, "dummy", DateTimeOffset.UnixEpoch);
     private readonly string _dummyPasswordHash = passwordHasher.HashPassword(
         new UserAccount("dummy", "dummy", "DUMMY", "", false, true, "dummy", DateTimeOffset.UnixEpoch),
         "not-a-real-password-value");
 
+    /// <summary>创建系统管理员及首个租户；存储层保证该操作只成功一次。</summary>
     public async Task<BootstrapIdentityResult> BootstrapAsync(
         string userName,
         string password,
@@ -50,6 +62,7 @@ public sealed class LocalAuthenticationService(
         return await store.BootstrapAsync(userName.Trim(), hash, tenantName.Trim(), cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>创建本地用户并在落库前完成输入校验和密码哈希。</summary>
     public async Task<UserAccount> CreateUserAsync(
         string userName,
         string password,
@@ -65,6 +78,7 @@ public sealed class LocalAuthenticationService(
         return await store.CreateUserAsync(trimmedName, hash, isSystemAdmin, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>创建租户并把指定用户设置为所有者。</summary>
     public Task<TenantAccount> CreateTenantAsync(
         string tenantName,
         string ownerUserId,
@@ -76,6 +90,7 @@ public sealed class LocalAuthenticationService(
         return store.CreateTenantAsync(tenantName.Trim(), ownerUserId, cancellationToken);
     }
 
+    /// <summary>创建或更新租户成员关系，并把角色规范化为固定值。</summary>
     public async Task<TenantMembership> SetMembershipAsync(
         string tenantId,
         string userName,
@@ -97,6 +112,7 @@ public sealed class LocalAuthenticationService(
         return await store.SetMembershipAsync(tenantId, user.Id, normalizedRole, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>验证凭据、选择唯一租户并签发只对该租户有效的身份令牌。</summary>
     public async Task<AuthenticatedSession?> LoginAsync(
         string userName,
         string password,
@@ -123,6 +139,7 @@ public sealed class LocalAuthenticationService(
         if (verification == PasswordVerificationResult.SuccessRehashNeeded)
             await store.UpdatePasswordHashAsync(user.Id, passwordHasher.HashPassword(user, password), cancellationToken).ConfigureAwait(false);
         var memberships = await store.GetMembershipsAsync(user.Id, cancellationToken).ConfigureAwait(false);
+        // 多租户用户必须显式选择租户，避免服务端悄悄使用错误租户签发令牌。
         var membership = tenantId is null
             ? memberships.Count == 1 ? memberships[0] : null
             : memberships.FirstOrDefault(item => item.TenantId == tenantId);
@@ -132,6 +149,7 @@ public sealed class LocalAuthenticationService(
             return null;
         }
 
+        // tenant_id 来自持久化成员关系而非请求头，是后续所有数据隔离判断的可信来源。
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, user.Id),

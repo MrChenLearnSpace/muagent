@@ -7,6 +7,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Tools;
 
+/// <summary>集中执行工具名称解析、JSON 参数解析、并发限制、超时、截断和遥测。</summary>
 public sealed class ToolGateway : IToolGateway
 {
     private readonly IReadOnlyDictionary<string, IAgentTool> _tools;
@@ -20,6 +21,7 @@ public sealed class ToolGateway : IToolGateway
     {
         _options = options.Value;
         _logger = logger;
+        // 工具名是模型请求中的协议标识，必须精确匹配且全局唯一，不能依赖大小写模糊解析。
         var registered = new Dictionary<string, IAgentTool>(StringComparer.Ordinal);
         foreach (var tool in tools)
         {
@@ -41,6 +43,7 @@ public sealed class ToolGateway : IToolGateway
         ToolExecutionContext context,
         CancellationToken cancellationToken = default)
     {
+        // 并发执行可降低多个独立工具的总耗时；用原始索引收集结果以维持模型调用顺序。
         using var concurrency = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrency));
         var results = new ConcurrentDictionary<int, ToolInvocationResult>();
 
@@ -90,6 +93,7 @@ public sealed class ToolGateway : IToolGateway
             return Finish(new ToolResult("Tool arguments are not valid JSON.", true));
         }
 
+        // 链接调用方取消信号与工具超时：前者继续向上抛出，后者转换为可反馈给模型的工具错误。
         using (arguments)
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
@@ -106,6 +110,7 @@ public sealed class ToolGateway : IToolGateway
             }
             catch (Exception exception)
             {
+                // 详细异常只进入服务日志，返回模型的文本不暴露路径、凭据或内部栈信息。
                 _logger.LogError(exception, "Tool {ToolName} failed for call {CallId}", call.Name, call.CallId);
                 return Finish(new ToolResult($"Tool '{call.Name}' failed.", true));
             }
@@ -137,6 +142,7 @@ public sealed class ToolGateway : IToolGateway
             return result;
         }
 
+        // 截断标志会进入遥测和持久化结果，模型也能从尾部标记知道内容并不完整。
         return result with
         {
             Content = result.Content[.._options.MaxResultCharacters] + "\n[tool result truncated]",

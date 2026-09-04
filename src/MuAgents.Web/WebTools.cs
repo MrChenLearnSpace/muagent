@@ -3,6 +3,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Web;
 
+/// <summary>把经过 SSRF 防护的网页读取能力暴露给模型。</summary>
 public sealed class WebFetchTool(IWebContentFetcher fetcher) : IAgentTool
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""
@@ -17,11 +18,16 @@ public sealed class WebFetchTool(IWebContentFetcher fetcher) : IAgentTool
         var content = await fetcher.FetchAsync(uri, cancellationToken).ConfigureAwait(false);
         return new ToolResult(JsonSerializer.Serialize(new
         {
-            url = content.Url.ToString(), content.Title, content.Text, content.FetchedAt, content.IsTruncated
+            url = content.Url.ToString(),
+            content.Title,
+            content.Text,
+            content.FetchedAt,
+            content.IsTruncated
         }));
     }
 }
 
+/// <summary>把配置的 Web 搜索服务暴露为模型工具。</summary>
 public sealed class WebSearchTool(IWebSearchProvider search) : IAgentTool
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""

@@ -16,10 +16,14 @@ using MuAgents.Core;
 using MuAgents.Hosting;
 using MuAgents.OpenAI;
 using MuAgents.Mcp;
+using MuAgents.Skills;
 
+// 在创建宿主前固定工作目录、临时目录和 .NET/NuGet 缓存，整个运行期只使用可执行文件目录。
+RuntimePaths.InitializeProcessEnvironment();
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
+// 敏感配置使用可选的 local 文件覆盖模板；两者都按可执行文件位置查找，不依赖启动目录。
 builder.Configuration
     .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "muagents.settings.json"), optional: false, reloadOnChange: true)
     .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "muagents.settings.local.json"), optional: true, reloadOnChange: true);
@@ -34,14 +38,14 @@ builder.Services.AddOptions<AuthenticationOptions>()
     .Validate(options => options.MinimumPasswordLength is >= 12 and <= 128, "Minimum password length must be 12-128.")
     .ValidateOnStart();
 builder.Services.Configure<PasswordHasherOptions>(options => options.IterationCount = 210_000);
-var dataProtectionPath = Path.IsPathRooted(configuredAuthentication.DataProtectionKeysPath)
-    ? configuredAuthentication.DataProtectionKeysPath
-    : Path.Combine(AppContext.BaseDirectory, configuredAuthentication.DataProtectionKeysPath);
+// Cookie 加密密钥需要持久化，但必须和数据库一样留在程序根目录内，保证目录整体可迁移。
+var dataProtectionPath = RuntimePaths.ResolveWritePath(
+    configuredAuthentication.DataProtectionKeysPath,
+    "MuAgents:Authentication:DataProtectionKeysPath");
 Directory.CreateDirectory(dataProtectionPath);
-var dataProtection = builder.Services.AddDataProtection()
+builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
     .SetApplicationName("MuAgents");
-if (OperatingSystem.IsWindows()) dataProtection.ProtectKeysWithDpapi();
 builder.Services.AddSingleton<IPasswordHasher<UserAccount>, PasswordHasher<UserAccount>>();
 builder.Services.AddScoped<LocalAuthenticationService>();
 var signingKey = configuredAuthentication.JwtSigningKey.Length >= 32
@@ -55,6 +59,7 @@ builder.Services
     })
     .AddPolicyScheme("MuAgents.Auth", "Cookie or JWT", options =>
     {
+        // API 客户端带 Bearer 头时使用 JWT；浏览器请求默认使用 HttpOnly Cookie。
         options.ForwardDefaultSelector = context =>
             context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
                 ? JwtBearerDefaults.AuthenticationScheme
@@ -113,6 +118,7 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+// 在响应真正写出前加入关联 ID，流式响应同样可以据此查询日志和链路。
 app.Use(async (context, next) =>
 {
     var traceId = Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;
@@ -128,11 +134,16 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// 映射路由前初始化两组表结构，使启动失败能够尽早暴露而不是延迟到第一个用户请求。
 await app.Services.GetRequiredService<IConversationStore>().InitializeAsync();
 await app.Services.GetRequiredService<IIdentityStore>().InitializeAsync();
+// 动态扩展配置在启动时就创建，管理员无需先调用接口才能找到配置文件。
+_ = app.Services.GetRequiredService<McpConfigurationStore>();
+_ = app.Services.GetRequiredService<SkillConfigurationStore>();
 
 var publicApi = app.MapGroup("/api/v1");
 publicApi.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+// bootstrap 是唯一无需身份的写接口，存储层以事务和唯一约束保证只能完成一次。
 publicApi.MapPost("/auth/bootstrap", async (
     BootstrapRequest request,
     IIdentityStore store,
@@ -182,6 +193,7 @@ publicApi.MapPost("/auth/login", async (
     });
 }).RequireRateLimiting("authentication");
 
+// 下方路由全部要求已验证的 Cookie 或 JWT，不接受调用方自报用户/租户 ID。
 var api = app.MapGroup("/api/v1").RequireAuthorization();
 api.MapPost("/auth/logout", async (HttpContext http) =>
 {
@@ -197,11 +209,29 @@ api.MapGet("/auth/me", (HttpContext http) => Results.Ok(new
     role = http.User.FindFirstValue(ClaimTypes.Role),
     isSystemAdmin = http.User.HasClaim("system_admin", "true")
 }));
+api.MapGet("/model", (IOptions<OpenAiCompatibleOptions> options) =>
+{
+    var model = options.Value;
+    var endpoint = new Uri(new Uri(model.BaseUrl, UriKind.Absolute), model.ResolveEndpoint());
+    // 只报告模型连接状态，不把实际密钥回传给任何客户端。
+    return Results.Ok(new
+    {
+        protocol = model.Protocol.ToString(),
+        endpoint = endpoint.ToString(),
+        model = model.Model,
+        model.MaxContextTokens,
+        model.MaxOutputTokens,
+        model.SupportsVision,
+        model.SupportsTools,
+        apiKeyConfigured = !string.IsNullOrWhiteSpace(model.ApiKey)
+    });
+});
 api.MapGet("/auth/tenants", async (
     HttpContext http,
     IIdentityStore store,
     CancellationToken cancellationToken) =>
 {
+    // 身份只从已验证声明读取，避免请求正文或自定义头绕过租户隔离。
     var identity = RequestIdentity.From(http);
     return Results.Ok(await store.GetMembershipsAsync(identity.UserId, cancellationToken));
 });
@@ -305,6 +335,52 @@ api.MapGet("/conversations/{conversationId}", async (
     return Results.Ok(new { conversation, messages });
 });
 
+api.MapGet("/conversations/{conversationId}/context", async Task<IResult> (
+    HttpContext http,
+    string conversationId,
+    AgentRuntime runtime,
+    IOptions<OpenAiCompatibleOptions> modelOptions,
+    CancellationToken cancellationToken) =>
+{
+    var identity = RequestIdentity.From(http);
+    try
+    {
+        var model = modelOptions.Value;
+        return Results.Ok(await runtime.GetContextStatusAsync(
+            identity.TenantId,
+            conversationId,
+            new ModelParameters(model.Model, model.MaxOutputTokens),
+            cancellationToken));
+    }
+    catch (KeyNotFoundException)
+    {
+        return Results.NotFound();
+    }
+});
+
+api.MapPost("/conversations/{conversationId}/compact", async Task<IResult> (
+    HttpContext http,
+    string conversationId,
+    AgentRuntime runtime,
+    IOptions<OpenAiCompatibleOptions> modelOptions,
+    CancellationToken cancellationToken) =>
+{
+    var identity = RequestIdentity.From(http);
+    try
+    {
+        var model = modelOptions.Value;
+        return Results.Ok(await runtime.CompactAsync(
+            identity.TenantId,
+            conversationId,
+            new ModelParameters(model.Model, model.MaxOutputTokens),
+            cancellationToken));
+    }
+    catch (KeyNotFoundException)
+    {
+        return Results.NotFound();
+    }
+});
+
 api.MapPost("/conversations/{conversationId}/messages", async (
     HttpContext http,
     string conversationId,
@@ -320,7 +396,9 @@ api.MapPost("/conversations/{conversationId}/messages", async (
     var configuredModel = modelOptions.Value;
     var model = request.Model ?? configuredModel.Model;
     var maxOutputTokens = request.MaxOutputTokens ?? configuredModel.MaxOutputTokens;
+    var inputText = ComposeReferencedMessage(request.Text, request.References);
     var images = new List<ImagePart>();
+    // 图片在进入模型前统一经过来源、大小、魔数、像素和文件根目录检查。
     foreach (var image in request.Images ?? [])
     {
         if (!Enum.TryParse<ImageSourceKind>(image.Kind, ignoreCase: true, out var kind))
@@ -328,6 +406,7 @@ api.MapPost("/conversations/{conversationId}/messages", async (
         images.Add(await imageProcessor.ProcessAsync(new ImageSource(kind, image.Value), image.MediaType, cancellationToken));
     }
     var systemInstruction = request.SystemInstruction;
+    // Skill 文本被明确标记为不可信，且只有依赖工具全部可用时才注入系统指令。
     foreach (var skillName in request.Skills ?? [])
     {
         var skill = await skillCatalog.GetAsync(skillName, cancellationToken)
@@ -342,6 +421,7 @@ api.MapPost("/conversations/{conversationId}/messages", async (
         }.Where(value => !string.IsNullOrWhiteSpace(value)));
     }
 
+    // NDJSON 每行都是一个完整事件；逐行 Flush 可让 CLI/UI 在模型完成前实时呈现增量。
     http.Response.StatusCode = StatusCodes.Status200OK;
     http.Response.ContentType = "application/x-ndjson; charset=utf-8";
     try
@@ -351,26 +431,27 @@ api.MapPost("/conversations/{conversationId}/messages", async (
                                identity.TenantId,
                                identity.UserId,
                                conversationId,
-                               request.Text,
+                               inputText,
                                new ModelParameters(model, maxOutputTokens, request.Temperature, systemInstruction),
                                images),
                            cancellationToken))
         {
-            await JsonSerializer.SerializeAsync(
+            await EventEnvelope.WriteAsync(
                 http.Response.Body,
                 EventEnvelope.From(agentEvent),
-                cancellationToken: cancellationToken);
+                cancellationToken);
             await http.Response.WriteAsync("\n", cancellationToken);
             await http.Response.Body.FlushAsync(cancellationToken);
         }
     }
+    // 响应头发出后无法改成 ProblemDetails，因此把运行期错误写成流中的 error 事件。
     catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
     {
         var category = exception is MuAgentException known ? known.Category.ToString() : "Unhandled";
-        await JsonSerializer.SerializeAsync(
+        await EventEnvelope.WriteAsync(
             http.Response.Body,
             new EventEnvelope("error", new { category, message = exception.Message }),
-            cancellationToken: cancellationToken);
+            cancellationToken);
         await http.Response.WriteAsync("\n", cancellationToken);
     }
 });
@@ -381,6 +462,59 @@ api.MapGet("/skills", async (HttpContext http, ISkillCatalog skills, Cancellatio
     var discovered = await skills.DiscoverAsync(cancellationToken);
     return Results.Ok(discovered.Select(skill => new { skill.Name, skill.Description, skill.Version, skill.RequiredTools }));
 });
+
+api.MapGet("/skills/config", async (
+    HttpContext http,
+    FileSystemSkillCatalog skills,
+    SkillConfigurationStore configuration,
+    CancellationToken cancellationToken) =>
+{
+    _ = RequestIdentity.From(http);
+    var settings = configuration.Snapshot();
+    var entries = await skills.DiscoverAllAsync(cancellationToken);
+    return Results.Ok(new
+    {
+        configurationPath = configuration.ConfigurationPath,
+        directories = settings.Directories,
+        skills = entries.Select(entry => new
+        {
+            entry.Manifest.Name,
+            entry.Manifest.Description,
+            entry.Manifest.Version,
+            entry.Manifest.Directory,
+            entry.Enabled
+        })
+    });
+});
+
+api.MapPost("/skills/directories", (
+    SkillDirectoryRequest request,
+    SkillConfigurationStore configuration) =>
+    Results.Ok(new
+    {
+        directory = configuration.AddDirectory(request.Path),
+        configurationPath = configuration.ConfigurationPath
+    })).RequireAuthorization("system-admin");
+
+api.MapDelete("/skills/directories", (
+    string path,
+    SkillConfigurationStore configuration) =>
+    configuration.RemoveDirectory(path) ? Results.NoContent() : Results.NotFound())
+    .RequireAuthorization("system-admin");
+
+api.MapPut("/skills/{name}/enabled", async Task<IResult> (
+    string name,
+    EnabledRequest request,
+    FileSystemSkillCatalog skills,
+    SkillConfigurationStore configuration,
+    CancellationToken cancellationToken) =>
+{
+    var exists = (await skills.DiscoverAllAsync(cancellationToken))
+        .Any(entry => entry.Manifest.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+    if (!exists) return Results.NotFound();
+    configuration.SetEnabled(name, request.Enabled);
+    return Results.Ok(new { name, request.Enabled, configurationPath = configuration.ConfigurationPath });
+}).RequireAuthorization("system-admin");
 
 api.MapPost("/skills/{name}/scripts/{script}", async (
     HttpContext http,
@@ -409,14 +543,115 @@ api.MapGet("/mcp/{server}/tools", async (
     return Results.Ok(await mcp.ListToolsAsync(server, cancellationToken));
 });
 
+api.MapGet("/mcp", (HttpContext http, IMcpClientManager mcp) =>
+{
+    _ = RequestIdentity.From(http);
+    return Results.Ok(new
+    {
+        configurationPath = mcp.ConfigurationPath,
+        servers = mcp.ListServers().Select(profile => new
+        {
+            profile.Name,
+            profile.Enabled,
+            transport = profile.Transport.ToString(),
+            profile.Url,
+            profile.Command,
+            profile.TimeoutSeconds,
+            profile.AllowTools,
+            profile.DenyTools
+        })
+    });
+});
+
+api.MapPost("/mcp", async (
+    McpAddRequest request,
+    IMcpClientManager mcp) =>
+{
+    var name = string.IsNullOrWhiteSpace(request.Name) ? DeriveMcpName(request.Url) : request.Name.Trim();
+    var profile = await mcp.UpsertServerAsync(new McpServerProfile
+    {
+        Name = name,
+        Enabled = request.Enabled,
+        Transport = McpTransport.StreamableHttp,
+        Url = request.Url,
+        TimeoutSeconds = request.TimeoutSeconds
+    });
+    return Results.Ok(new
+    {
+        profile.Name,
+        profile.Enabled,
+        transport = profile.Transport.ToString(),
+        profile.Url,
+        configurationPath = mcp.ConfigurationPath
+    });
+}).RequireAuthorization("system-admin");
+
+api.MapPut("/mcp/{name}/enabled", async Task<IResult> (
+    string name,
+    EnabledRequest request,
+    IMcpClientManager mcp) =>
+    await mcp.SetServerEnabledAsync(name, request.Enabled)
+        ? Results.Ok(new { name, request.Enabled, configurationPath = mcp.ConfigurationPath })
+        : Results.NotFound()).RequireAuthorization("system-admin");
+
+api.MapDelete("/mcp/{name}", async Task<IResult> (string name, IMcpClientManager mcp) =>
+    await mcp.RemoveServerAsync(name) ? Results.NoContent() : Results.NotFound())
+    .RequireAuthorization("system-admin");
+
 app.Run();
 
+static string? ComposeReferencedMessage(
+    string? text,
+    IReadOnlyList<ReferencedFileRequest>? references)
+{
+    if (references is not { Count: > 0 }) return text;
+    if (references.Count > 200)
+        throw new BadHttpRequestException("A message may reference at most 200 files.");
+
+    var totalCharacters = 0;
+    var builder = new StringBuilder(text ?? string.Empty);
+    builder.AppendLine().AppendLine().AppendLine("<referenced_files trust=\"untrusted\">");
+    foreach (var file in references)
+    {
+        if (string.IsNullOrWhiteSpace(file.Path) || file.Path.Length > 1_024)
+            throw new BadHttpRequestException("Each referenced file must have a path of at most 1024 characters.");
+        if (file.Content is null || file.Content.Length > 256 * 1024)
+            throw new BadHttpRequestException($"Referenced file '{file.Path}' exceeds the per-file character limit.");
+        totalCharacters = checked(totalCharacters + file.Content.Length);
+        if (totalCharacters > 2 * 1024 * 1024)
+            throw new BadHttpRequestException("Referenced files exceed the total character limit.");
+
+        // 路径使用 JSON 字符串转义，文件内容保持原文；整段位于 User 消息中，不获得系统指令权限。
+        builder.Append("<file path=").Append(JsonSerializer.Serialize(file.Path)).AppendLine(">");
+        builder.AppendLine(file.Content).AppendLine("</file>");
+    }
+    builder.Append("</referenced_files>");
+    return builder.ToString();
+}
+
+static string DeriveMcpName(string url)
+{
+    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        throw new BadHttpRequestException("MCP URL must be absolute.");
+    var name = new string(uri.Host
+        .Select(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-' or '.' ? character : '-')
+        .ToArray());
+    return string.IsNullOrWhiteSpace(name) ? "mcp-server" : name;
+}
+
+/// <summary>创建一个属于当前认证租户和用户的新会话。</summary>
 public sealed record CreateConversationRequest(string? Title);
+/// <summary>首次初始化管理员及默认租户所需数据。</summary>
 public sealed record BootstrapRequest(string UserName, string Password, string TenantName);
+/// <summary>登录凭据、可选租户选择和 Cookie 登录开关。</summary>
 public sealed record LoginRequest(string UserName, string Password, string? TenantId = null, bool UseCookie = false);
+/// <summary>系统管理员创建用户的请求。</summary>
 public sealed record CreateUserRequest(string UserName, string Password, bool IsSystemAdmin = false);
+/// <summary>系统管理员创建租户及指定所有者的请求。</summary>
 public sealed record CreateTenantRequest(string Name, string? OwnerUserName = null);
+/// <summary>创建或更新租户成员角色的请求。</summary>
 public sealed record SetMembershipRequest(string UserName, string Role);
+/// <summary>一次对话消息及其可选模型参数、图片和 Skill。</summary>
 public sealed record SendMessageRequest(
     string? Text,
     string? Model = null,
@@ -424,12 +659,29 @@ public sealed record SendMessageRequest(
     double? Temperature = null,
     string? SystemInstruction = null,
     IReadOnlyList<ImageInputRequest>? Images = null,
-    IReadOnlyList<string>? Skills = null);
+    IReadOnlyList<string>? Skills = null,
+    IReadOnlyList<ReferencedFileRequest>? References = null);
+/// <summary>由 CLI 读取并随消息上传的文本文件；Path 仅用于向模型标识来源。</summary>
+public sealed record ReferencedFileRequest(string Path, string Content);
+/// <summary>API 图片来源；Kind 对应 HttpsUrl、FileReference 或 DataUrl。</summary>
 public sealed record ImageInputRequest(string Kind, string Value, string? MediaType = null);
+/// <summary>执行 Skill 脚本的参数和显式批准状态。</summary>
 public sealed record RunScriptRequest(IReadOnlyList<string>? Arguments = null, bool Approved = false);
+/// <summary>动态添加 HTTP MCP 服务的请求。</summary>
+public sealed record McpAddRequest(string Url, string? Name = null, bool Enabled = true, int TimeoutSeconds = 60);
+/// <summary>统一的启用或禁用请求。</summary>
+public sealed record EnabledRequest(bool Enabled);
+/// <summary>添加 Skill 根目录的请求。</summary>
+public sealed record SkillDirectoryRequest(string Path);
 
+/// <summary>API 输出的 NDJSON 事件外壳，Type 是稳定的客户端判别字段。</summary>
 public sealed record EventEnvelope(string Type, object Data)
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static Task WriteAsync(Stream stream, EventEnvelope value, CancellationToken cancellationToken = default) =>
+        JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken);
+
     public static EventEnvelope From(AgentEvent value) => value switch
     {
         TextDeltaEvent item => new("text_delta", item),
@@ -445,6 +697,7 @@ public sealed record EventEnvelope(string Type, object Data)
     };
 }
 
+/// <summary>从验证后的声明提取的请求身份，不允许由客户端正文直接构造授权上下文。</summary>
 public sealed record RequestIdentity(string TenantId, string UserId)
 {
     public static RequestIdentity From(HttpContext context)
@@ -459,8 +712,10 @@ public sealed record RequestIdentity(string TenantId, string UserId)
     }
 }
 
+/// <summary>租户管理授权规则。</summary>
 public static class TenantAccess
 {
+    /// <summary>系统管理员可管理任意租户；普通用户仅能以目标租户 Owner 身份管理成员。</summary>
     public static bool CanManageMembers(ClaimsPrincipal principal, string tenantId) =>
         principal.HasClaim("system_admin", "true") ||
         (string.Equals(principal.FindFirstValue("tenant_id"), tenantId, StringComparison.Ordinal) &&

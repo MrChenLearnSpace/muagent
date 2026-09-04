@@ -6,6 +6,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Ocr;
 
+/// <summary>在程序根目录临时区调用 Tesseract，并把文本与 TSV 坐标合成为页结果。</summary>
 public sealed class TesseractOcrEngine(IOptions<TesseractOcrOptions> options) : IOcrEngine
 {
     private readonly TesseractOcrOptions _options = options.Value;
@@ -16,16 +17,20 @@ public sealed class TesseractOcrEngine(IOptions<TesseractOcrOptions> options) : 
         IReadOnlyList<string> languages,
         CancellationToken cancellationToken = default)
     {
-        var fullPath = Path.GetFullPath(imagePath);
+        var fullPath = Path.GetFullPath(imagePath, RuntimePaths.RootDirectory);
         if (!File.Exists(fullPath)) throw new FileNotFoundException("OCR image was not found.", fullPath);
+        using var temporaryDirectory = RuntimePaths.CreateTemporaryDirectory("ocr");
         var startInfo = new ProcessStartInfo
         {
             FileName = _options.Executable,
+            WorkingDirectory = temporaryDirectory.DirectoryPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        // 同时覆盖临时目录和运行时缓存变量，防止 Tesseract 及其子进程写到程序目录之外。
+        RuntimePaths.ConfigureChildProcess(startInfo, temporaryDirectory.DirectoryPath);
         startInfo.ArgumentList.Add(fullPath);
         startInfo.ArgumentList.Add("stdout");
         startInfo.ArgumentList.Add("-l");
@@ -77,6 +82,7 @@ public sealed class TesseractOcrEngine(IOptions<TesseractOcrOptions> options) : 
         var text = new StringBuilder();
         var confidenceTotal = 0d;
         var previousLine = string.Empty;
+        // Tesseract TSV 的行级标识由 page/block/paragraph/line 组成，用它恢复自然换行。
         foreach (var line in tsv.Split('\n').Skip(1))
         {
             var fields = line.TrimEnd('\r').Split('\t');

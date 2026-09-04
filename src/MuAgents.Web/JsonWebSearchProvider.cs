@@ -5,6 +5,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Web;
 
+/// <summary>调用 JSON 搜索端点并把供应商结果映射为统一 WebSearchResult。</summary>
 public sealed class JsonWebSearchProvider(
     HttpClient httpClient,
     IOptions<WebOptions> options) : IWebSearchProvider

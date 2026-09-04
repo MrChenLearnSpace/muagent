@@ -1,108 +1,127 @@
 # MuAgents
 
-MuAgents is a cross-platform .NET agent runtime. The first implementation slice includes a streaming agent loop, namespaced tools, tenant-aware SQLite conversations, context budgeting, and adapters for Chat Completions, Responses, and Messages-style APIs.
+MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流式智能体循环、工具调用、上下文压缩、租户隔离的会话持久化，以及 OpenAI Chat Completions、Responses 和 Anthropic Messages 风格协议的兼容适配。
 
-## Run
+## 主要能力
 
-Copy `apps/MuAgents.App/muagents.settings.json` to `muagents.settings.local.json` in the same directory and set `MuAgents.Model.BaseUrl`, `ApiKey`, `Protocol`, and `Model`. The local file is ignored by Git and is copied beside the executable when present. Then start the API:
+- 通过 NDJSON 实时推送文本、推理、工具调用、用量和完成事件。
+- 内置 Cookie 与 JWT Bearer 认证，并按用户、租户隔离会话。
+- 支持文本、Markdown、PDF、图片和 OCR 内容读取。
+- 支持本地工具、Web 搜索/抓取、MCP 服务及目录式 Skill。
+- CLI 支持文件引用、MCP/Skill 动态管理、上下文状态和手动压缩等斜杠命令。
+- API 与 CLI 都把可执行文件目录设为唯一根目录；SQLite、密钥、.NET/NuGet 缓存和临时文件不会写入 C 盘用户目录或系统临时目录。
+- 暴露 `ActivitySource` 和 `Meter`，可接入 OpenTelemetry。
+
+## 环境要求
+
+- .NET 8 SDK；
+- 一个兼容的模型服务及 API Key；
+- 可选：Poppler（PDF）、Tesseract（扫描件 OCR）以及 Skill 脚本所需运行时。
+
+## 快速开始
+
+1. 复制本地配置文件：
+
+   ```powershell
+   Copy-Item apps/MuAgents.App/muagents.settings.json `
+     apps/MuAgents.App/muagents.settings.local.json
+   ```
+
+2. 编辑 `muagents.settings.local.json`。例如兼容 Responses API 的服务：
+
+   ```json
+   {
+     "MuAgents": {
+       "Model": {
+         "Protocol": "Responses",
+         "BaseUrl": "http://10.1.1.226:10505/v1/",
+         "Endpoint": "responses",
+         "ApiKey": "请填写实际密钥",
+         "Model": "请填写实际模型名"
+       },
+       "Authentication": {
+         "JwtSigningKey": "请替换为至少32个字符的随机字符串"
+       }
+     }
+   }
+   ```
+
+   `BaseUrl` 必须包含 `http://` 或 `https://`。模型服务若不是 `/v1/responses` 路由，请相应调整 `BaseUrl`、`Endpoint` 和 `Protocol`。
+
+3. 启动 API：
+
+   ```powershell
+   dotnet run --project apps/MuAgents.App
+   ```
+
+4. 首次运行时，在另一个终端启动 CLI 并初始化管理员：
+
+   ```powershell
+   dotnet run --project apps/MuAgents.Cli -- `
+     --url http://localhost:5000/ `
+     --user admin `
+     --bootstrap `
+     --tenant-name Local
+   ```
+
+   按提示输入密码。密码长度必须满足配置中的 `MinimumPasswordLength`，默认至少 12 个字符。以后启动 CLI 时去掉 `--bootstrap`。
+
+进入 CLI 后可直接使用：
+
+```text
+/help                  查看所有命令
+/model                 查看模型协议、端点、名称、上下文及能力
+/add .                 引用当前目录下全部可读文本文件
+/add D:\work\project   引用指定目录下全部可读文本文件
+/context               查看当前文件上下文
+/remove all            清空文件引用
+/mcp                   查看 MCP 服务及配置文件路径
+/mcp_add <url>         添加 HTTP MCP 服务
+/mcp_disable <名称>    禁用 MCP 服务
+/skills                查看 Skill、扫描目录及配置文件路径
+/skills_add <目录>     添加 Skill 或 Skill 根目录
+/skills_disable <名称> 禁用 Skill
+/compact               把会话压缩到最大上下文的 1/3 以内
+```
+
+目录引用会递归处理，并自动跳过 `.git`、`bin`、`obj`、`data`、`node_modules`、本地密钥文件、二进制及超限文件。
+MCP 与 Skill 的增删和启停会立即持久化到程序根目录的 `config/mcp.json` 与 `config/skills.json`。每次模型回答结束后，终端都会显示“当前上下文 / 最大上下文”Token 数。
+
+## 可移植目录约束
+
+程序启动后会把工作目录固定为 `AppContext.BaseDirectory`，也就是发布后可执行文件所在目录。所有可写数据必须位于这个目录之下：
+
+```text
+MuAgents.App/
+├─ MuAgents.App.exe
+├─ appsettings.json
+├─ muagents.settings.json
+├─ muagents.settings.local.json   # 本地敏感配置，不提交 Git
+├─ config/
+│  ├─ mcp.json                    # MCP 服务及启停状态
+│  └─ skills.json                 # Skill 扫描目录及禁用清单
+├─ data/
+│  ├─ muagents.db                 # 会话、身份和租户数据
+│  ├─ keys/                       # ASP.NET Core Data Protection 密钥
+│  ├─ temp/                       # 主进程、PDF、OCR、MCP 等临时文件
+│  ├─ dotnet/                     # 子进程的 .NET CLI 主目录
+│  └─ nuget/                      # 子进程的 NuGet 包与 HTTP 缓存
+└─ skills/                        # Skill 目录及脚本
+```
+
+API、CLI、MCP、OCR、内容处理和 Skill 脚本都会继承这条规则。`TEMP`、`TMP`、`TMPDIR`、`DOTNET_CLI_HOME`、`NUGET_PACKAGES`、`NUGET_HTTP_CACHE_PATH` 与 `DOTNET_BUNDLE_EXTRACT_BASE_DIR` 在进程启动时被重定向到 `data/`。相对读写路径基于程序根目录解析；指向根目录外部的写入路径会被拒绝。`data/keys` 中的便携式密钥没有绑定 Windows DPAPI，部署时应使用操作系统权限限制访问。
+
+## 文档
+
+- [完整使用手册](docs/USER_GUIDE.md)
+- [项目文件详细说明](docs/FILE_REFERENCE.md)
+- [架构设计](DESIGN.md)
+
+## 构建与测试
 
 ```powershell
-dotnet run --project apps/MuAgents.App
+dotnet build MuAgents.sln -c Release
+dotnet test MuAgents.sln -c Release --no-build
 ```
 
-Start the CLI in another terminal:
-
-```powershell
-dotnet run --project apps/MuAgents.Cli -- --url http://localhost:5000/
-```
-
-Model credentials and endpoint selection are loaded from `muagents.settings.json` and the optional `muagents.settings.local.json` beside the program. Environment variables are not used for model credentials.
-
-Protected APIs require a Cookie or JWT Bearer identity. Tenant and user IDs are taken only from validated claims; request headers can no longer select an arbitrary tenant.
-
-## Configuration
-
-Sensitive endpoint configuration belongs in `apps/MuAgents.App/muagents.settings.local.json` during development or beside `MuAgents.App.exe` after publishing:
-
-```json
-{
-  "MuAgents": {
-    "Model": {
-      "Protocol": "Responses",
-      "BaseUrl": "https://provider.example/v1/",
-      "Endpoint": "responses",
-      "ApiKey": "your-key",
-      "Model": "model-name"
-    },
-    "Authentication": {
-      "JwtSigningKey": "replace-with-at-least-32-random-characters"
-    },
-    "Web": {
-      "SearchEndpoint": "https://search.example/api?q={query}&count={count}",
-      "ApiKey": "search-key",
-      "ApiKeyHeader": "X-API-Key"
-    }
-  }
-}
-```
-
-For local files and images, configure `MuAgents.Content.FileTool.WorkspaceRoots` and `MuAgents.Content.Images.AllowedRoots` in `appsettings.json`. Empty root lists restrict access to the process working directory.
-
-PDF text extraction uses Poppler's `pdftotext`. Scanned pages additionally require `pdftoppm` and Tesseract with the configured language packs. Executable names or absolute paths are configured under `MuAgents.Content`.
-
-MCP servers are configured in `MuAgents.Mcp.Servers`. Both `StreamableHttp` and `Stdio` transports are supported:
-
-```json
-{
-  "Name": "example",
-  "Enabled": true,
-  "Transport": "Stdio",
-  "Command": "node",
-  "Arguments": [ "server.js" ],
-  "AllowTools": []
-}
-```
-
-Skill directories use the `skills/<name>/SKILL.md` layout. Scripts are denied, approval-gated, or allowed according to `MuAgents.Skills.ScriptPolicy`; approval-gated scripts require `Approved: true` on the script API request.
-
-## First login
-
-Set a random JWT signing key in `muagents.settings.local.json` before starting the application. Create the first local administrator and tenant exactly once:
-
-```powershell
-Invoke-RestMethod -Method Post http://localhost:5000/api/v1/auth/bootstrap `
-  -ContentType application/json `
-  -Body '{"userName":"admin","password":"a-long-unique-password","tenantName":"Local"}'
-```
-
-Then call `/api/v1/auth/login`, or start the CLI with `--bootstrap` on its first run. The login response contains a tenant-scoped JWT. Pass `useCookie: true` to also create an HTTP-only, same-site authentication cookie.
-
-## User and tenant administration
-
-The bootstrap account is a system administrator. Use its bearer token to create additional users and tenants:
-
-```powershell
-$headers = @{ Authorization = "Bearer $token" }
-
-Invoke-RestMethod -Method Post http://localhost:5000/api/v1/admin/users `
-  -Headers $headers -ContentType application/json `
-  -Body '{"userName":"operator","password":"another-long-password"}'
-
-Invoke-RestMethod -Method Post http://localhost:5000/api/v1/admin/tenants `
-  -Headers $headers -ContentType application/json `
-  -Body '{"name":"Operations","ownerUserName":"admin"}'
-```
-
-A system administrator, or an `Owner` authenticated into the matching tenant, can add or update a tenant member. Roles are `Owner`, `Admin`, and `Member`:
-
-```powershell
-Invoke-RestMethod -Method Put "http://localhost:5000/api/v1/tenants/$tenantId/members" `
-  -Headers $headers -ContentType application/json `
-  -Body '{"userName":"operator","role":"Member"}'
-```
-
-`GET /api/v1/auth/tenants` lists the authenticated user's memberships. When a user belongs to more than one tenant, pass the selected `tenantId` to `/api/v1/auth/login`; the resulting token can access only that tenant.
-
-## Observability
-
-MuAgents emits .NET diagnostics through the `MuAgents` `ActivitySource` and `Meter`. Traces cover agent runs, model calls, and tool calls. Metrics cover run/request counts and durations, failures, context compactions, model token usage, and time to the first streamed model event. An OpenTelemetry host can subscribe to the source and meter without changes to the runtime. Every HTTP response also includes an `X-Trace-Id` header for correlation.
+本地配置 `muagents.settings.local.json`、运行数据 `data/`、构建输出 `bin/` 和 `obj/` 均不应提交到版本库。

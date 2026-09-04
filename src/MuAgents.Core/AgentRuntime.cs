@@ -8,11 +8,13 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Core;
 
+/// <summary>控制单轮智能体允许的最大模型—工具往返次数。</summary>
 public sealed class AgentOptions
 {
     public int MaxToolIterations { get; set; } = 12;
 }
 
+/// <summary>启动一轮智能体运行所需的可信身份、会话、用户输入和模型参数。</summary>
 public sealed record AgentRunRequest(
     string TenantId,
     string UserId,
@@ -21,28 +23,48 @@ public sealed record AgentRunRequest(
     ModelParameters Parameters,
     IReadOnlyList<ImagePart>? Images = null);
 
+/// <summary>向 HTTP/CLI 调用方公开的智能体事件基类。</summary>
 public abstract record AgentEvent;
+/// <summary>最终回答正文增量。</summary>
 public sealed record TextDeltaEvent(string Delta) : AgentEvent;
+/// <summary>供应商公开的推理增量。</summary>
 public sealed record ReasoningDeltaEvent(string Delta) : AgentEvent;
+/// <summary>工具即将执行。</summary>
 public sealed record ToolCallStartedEvent(string CallId, string Name) : AgentEvent;
+/// <summary>工具执行结束及结果状态。</summary>
 public sealed record ToolCallCompletedEvent(string CallId, string Name, bool IsError, long DurationMilliseconds) : AgentEvent;
+/// <summary>上下文压缩开始，携带压缩前估算量。</summary>
 public sealed record CompactionStartedEvent(int EstimatedTokens) : AgentEvent;
+/// <summary>上下文压缩完成，携带前后估算量。</summary>
 public sealed record CompactionCompletedEvent(int BeforeTokens, int AfterTokens) : AgentEvent;
+/// <summary>模型报告了新的 Token 用量。</summary>
 public sealed record UsageUpdatedEvent(int InputTokens, int OutputTokens) : AgentEvent;
+/// <summary>不终止运行的警告。</summary>
 public sealed record WarningEvent(string Message) : AgentEvent;
+/// <summary>本轮正常结束及停止原因。</summary>
 public sealed record CompletedEvent(string? FinishReason = null) : AgentEvent;
 
+/// <summary>会话当前上下文估算、上限和手动压缩目标。</summary>
+public sealed record AgentContextStatus(int CurrentTokens, int MaxContextTokens, int CompactTargetTokens);
+
+/// <summary>
+/// 智能体编排核心：持久化输入、准备上下文、消费模型流、执行工具并继续下一次模型调用。
+/// </summary>
 public sealed class AgentRuntime(
     IChatModel model,
     IToolGateway tools,
     IConversationStore conversations,
     IContextManager contextManager,
     IOptions<AgentOptions> options,
+    IOptions<ContextOptions> contextOptions,
     ILogger<AgentRuntime> logger)
 {
+    // 同一租户同一会话只允许一轮写入，避免两次请求交叉追加消息而破坏上下文顺序。
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> ConversationLocks = new();
     private readonly AgentOptions _options = options.Value;
+    private readonly ContextOptions _contextOptions = contextOptions.Value;
 
+    /// <summary>执行并流式返回一轮智能体事件；枚举结束即代表本轮运行结束。</summary>
     public async IAsyncEnumerable<AgentEvent> RunAsync(
         AgentRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -84,6 +106,7 @@ public sealed class AgentRuntime(
                 new AgentMessage(Guid.NewGuid().ToString("N"), AgentRole.User, userParts, DateTimeOffset.UtcNow),
                 cancellationToken).ConfigureAwait(false);
 
+            // 每次工具结果落库后重新读取历史，使下一次模型调用看到完整且权威的消息顺序。
             for (var iteration = 0; iteration <= _options.MaxToolIterations; iteration++)
             {
                 var history = await conversations.GetMessagesAsync(
@@ -93,6 +116,12 @@ public sealed class AgentRuntime(
                 var plan = contextManager.Prepare(history, tools.Definitions, request.Parameters);
                 if (plan.WasCompacted)
                 {
+                    // 自动压缩后的检查点必须落库，否则下一轮仍会重复携带并压缩同一批旧消息。
+                    await conversations.ReplaceMessagesAsync(
+                        request.TenantId,
+                        request.ConversationId,
+                        plan.Messages,
+                        cancellationToken).ConfigureAwait(false);
                     MuAgentsTelemetry.Compactions.Add(1, modelTag);
                     activity?.AddEvent(new ActivityEvent(
                         "context.compacted",
@@ -105,6 +134,7 @@ public sealed class AgentRuntime(
                     yield return new CompactionCompletedEvent(plan.OriginalEstimatedTokens, plan.EstimatedTokens);
                 }
 
+                // 流式增量立即转发给客户端，同时聚合一份完整消息用于持久化。
                 var text = new StringBuilder();
                 var calls = new List<ToolInvocation>();
                 var finishReason = default(string);
@@ -159,6 +189,7 @@ public sealed class AgentRuntime(
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                // 没有工具调用即表示模型已给出最终回答，不再进入下一次迭代。
                 if (calls.Count == 0)
                 {
                     runCompleted = true;
@@ -179,6 +210,7 @@ public sealed class AgentRuntime(
                     yield return new ToolCallStartedEvent(call.CallId, call.Name);
                 }
 
+                // 网关内部负责并发上限与超时；这里按返回顺序逐条落库并发出完成事件。
                 var toolResults = await tools.InvokeAsync(
                     calls,
                     new ToolExecutionContext(request.TenantId, request.ConversationId, request.UserId),
@@ -219,6 +251,56 @@ public sealed class AgentRuntime(
                 modelTag,
                 new KeyValuePair<string, object?>("outcome", outcome));
             logger.LogDebug("Agent run finished for conversation {ConversationId}", request.ConversationId);
+        }
+    }
+
+    /// <summary>按与模型请求相同的估算方式计算当前持久化会话大小。</summary>
+    public async Task<AgentContextStatus> GetContextStatusAsync(
+        string tenantId,
+        string conversationId,
+        ModelParameters parameters,
+        CancellationToken cancellationToken = default)
+    {
+        if (await conversations.GetAsync(tenantId, conversationId, cancellationToken).ConfigureAwait(false) is null)
+            throw new KeyNotFoundException("Conversation was not found in this tenant.");
+        var history = await conversations.GetMessagesAsync(tenantId, conversationId, cancellationToken).ConfigureAwait(false);
+        return new AgentContextStatus(
+            contextManager.Estimate(history, tools.Definitions, parameters),
+            _contextOptions.MaxContextTokens,
+            Math.Max(1, _contextOptions.MaxContextTokens / 3));
+    }
+
+    /// <summary>在会话独占锁内把上下文持久化压缩到最大窗口的三分之一以内。</summary>
+    public async Task<AgentContextStatus> CompactAsync(
+        string tenantId,
+        string conversationId,
+        ModelParameters parameters,
+        CancellationToken cancellationToken = default)
+    {
+        var gateKey = $"{tenantId}\n{conversationId}";
+        var gate = ConversationLocks.GetOrAdd(gateKey, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (await conversations.GetAsync(tenantId, conversationId, cancellationToken).ConfigureAwait(false) is null)
+                throw new KeyNotFoundException("Conversation was not found in this tenant.");
+            var history = await conversations.GetMessagesAsync(tenantId, conversationId, cancellationToken).ConfigureAwait(false);
+            var target = Math.Max(1, _contextOptions.MaxContextTokens / 3);
+            var plan = contextManager.CompactToTarget(history, tools.Definitions, parameters, target);
+            if (plan.WasCompacted)
+            {
+                await conversations.ReplaceMessagesAsync(
+                    tenantId,
+                    conversationId,
+                    plan.Messages,
+                    cancellationToken).ConfigureAwait(false);
+                MuAgentsTelemetry.Compactions.Add(1, new KeyValuePair<string, object?>("model", parameters.Model));
+            }
+            return new AgentContextStatus(plan.EstimatedTokens, _contextOptions.MaxContextTokens, target);
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 }

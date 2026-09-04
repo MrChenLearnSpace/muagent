@@ -6,6 +6,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Persistence;
 
+/// <summary>使用 SQLite 保存租户隔离会话及多态消息内容的会话存储。</summary>
 public sealed class SqliteConversationStore : IConversationStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -15,7 +16,7 @@ public sealed class SqliteConversationStore : IConversationStore
 
     public SqliteConversationStore(IOptions<PersistenceOptions> options)
     {
-        _connectionString = options.Value.ConnectionString;
+        _connectionString = options.Value.ResolveConnectionString();
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -29,6 +30,7 @@ public sealed class SqliteConversationStore : IConversationStore
             await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var command = connection.CreateCommand();
             command.CommandText = """
+                -- WAL 允许读取与写入更好地并行；外键约束确保消息不会脱离会话存在。
                 PRAGMA journal_mode = WAL;
                 PRAGMA foreign_keys = ON;
 
@@ -159,6 +161,7 @@ public sealed class SqliteConversationStore : IConversationStore
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        // 消息插入和会话版本/更新时间更新必须处于同一事务，避免部分成功造成版本失真。
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
@@ -187,6 +190,60 @@ public sealed class SqliteConversationStore : IConversationStore
         if (affected != 1)
         {
             throw new KeyNotFoundException("Conversation was not found in this tenant.");
+        }
+
+        command.Parameters.Clear();
+        command.CommandText = """
+            UPDATE conversations
+            SET updated_at = $updated, version = version + 1
+            WHERE tenant_id = $tenant AND id = $conversation;
+            """;
+        command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$tenant", tenantId);
+        command.Parameters.AddWithValue("$conversation", conversationId);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ReplaceMessagesAsync(
+        string tenantId,
+        string conversationId,
+        IReadOnlyList<AgentMessage> messages,
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "SELECT COUNT(*) FROM conversations WHERE tenant_id = $tenant AND id = $conversation;";
+        command.Parameters.AddWithValue("$tenant", tenantId);
+        command.Parameters.AddWithValue("$conversation", conversationId);
+        if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1)
+            throw new KeyNotFoundException("Conversation was not found in this tenant.");
+
+        command.CommandText = "DELETE FROM messages WHERE tenant_id = $tenant AND conversation_id = $conversation;";
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        for (var index = 0; index < messages.Count; index++)
+        {
+            var message = messages[index];
+            command.Parameters.Clear();
+            command.CommandText = """
+                INSERT INTO messages
+                    (tenant_id, conversation_id, sequence, id, role, parts_json, created_at, metadata_json)
+                VALUES ($tenant, $conversation, $sequence, $id, $role, $parts, $created, $metadata);
+                """;
+            command.Parameters.AddWithValue("$tenant", tenantId);
+            command.Parameters.AddWithValue("$conversation", conversationId);
+            command.Parameters.AddWithValue("$sequence", index + 1);
+            command.Parameters.AddWithValue("$id", message.Id);
+            command.Parameters.AddWithValue("$role", (int)message.Role);
+            command.Parameters.AddWithValue("$parts", JsonSerializer.Serialize(message.Parts, JsonOptions));
+            command.Parameters.AddWithValue("$created", message.CreatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$metadata", message.Metadata is null
+                ? DBNull.Value
+                : JsonSerializer.Serialize(message.Metadata, JsonOptions));
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         command.Parameters.Clear();

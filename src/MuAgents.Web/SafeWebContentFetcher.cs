@@ -7,6 +7,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Web;
 
+/// <summary>逐跳校验地址并限制下载资源的网页抓取器，用于阻止 SSRF 和重定向绕过。</summary>
 public sealed partial class SafeWebContentFetcher(IOptions<WebOptions> options) : IWebContentFetcher
 {
     private readonly WebOptions _options = options.Value;
@@ -14,9 +15,11 @@ public sealed partial class SafeWebContentFetcher(IOptions<WebOptions> options) 
     public async Task<WebContent> FetchAsync(Uri uri, CancellationToken cancellationToken = default)
     {
         var current = uri;
+        // 禁用 HttpClient 自动重定向，并在每一跳重新做 DNS 与地址段检查，防止跳转到内网。
         for (var redirect = 0; redirect <= _options.MaxRedirects; redirect++)
         {
             var addresses = await ResolvePublicAddressesAsync(current, cancellationToken).ConfigureAwait(false);
+            // 将连接固定到已校验 IP，避免校验后再次解析域名造成 DNS rebinding。
             using var handler = CreatePinnedHandler(addresses[0]);
             using var client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
             client.DefaultRequestHeaders.UserAgent.ParseAdd("MuAgents/0.2");
@@ -78,6 +81,7 @@ public sealed partial class SafeWebContentFetcher(IOptions<WebOptions> options) 
         return new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
+            // 代理可能改变实际目的地址，使上面的地址校验失去意义，因此安全抓取器不使用系统代理。
             UseProxy = false,
             ConnectCallback = async (context, cancellationToken) =>
             {
@@ -105,6 +109,7 @@ public sealed partial class SafeWebContentFetcher(IOptions<WebOptions> options) 
         using var memory = new MemoryStream();
         var buffer = new byte[16 * 1024];
         var total = 0;
+        // 以流方式读取并在达到上限时立即停止，避免先缓存超大响应再截断。
         while (true)
         {
             var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);

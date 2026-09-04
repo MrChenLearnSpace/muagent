@@ -4,13 +4,18 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.Content;
 
+/// <summary>图片输入的字节、像素和本地读取目录限制。</summary>
 public sealed class ImageOptions
 {
+    /// <summary>单张图片允许的最大编码前字节数。</summary>
     public long MaxImageBytes { get; set; } = 10 * 1024 * 1024;
+    /// <summary>宽乘高允许的最大像素数，用于限制解码资源消耗。</summary>
     public long MaxPixels { get; set; } = 40_000_000;
+    /// <summary>允许引用图片文件的根目录；为空时仅允许程序根目录。</summary>
     public List<string> AllowedRoots { get; set; } = [];
 }
 
+/// <summary>校验图片来源和真实文件头，并把本地/Data URL 输入规范化为 Data URL。</summary>
 public sealed class ImageInputProcessor(IOptions<ImageOptions> options) : IImageInputProcessor
 {
     private readonly ImageOptions _options = options.Value;
@@ -20,6 +25,7 @@ public sealed class ImageInputProcessor(IOptions<ImageOptions> options) : IImage
         string? declaredMediaType,
         CancellationToken cancellationToken = default)
     {
+        // 远程图片由模型服务获取，因此这里只接受加密 HTTPS，绝不自动降级到 HTTP。
         if (source.Kind == ImageSourceKind.HttpsUrl)
         {
             if (!Uri.TryCreate(source.Value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
@@ -49,6 +55,7 @@ public sealed class ImageInputProcessor(IOptions<ImageOptions> options) : IImage
         }
 
         if (bytes.LongLength > _options.MaxImageBytes) throw TooLarge(bytes.LongLength);
+        // 不信任调用方声明的 MIME，必须用魔数识别并与声明交叉验证。
         var (mediaType, width, height) = Inspect(bytes);
         if (declaredMediaType is not null && !declaredMediaType.Equals(mediaType, StringComparison.OrdinalIgnoreCase))
             throw new MuAgentException(MuAgentErrorCategory.ContentFailure, "Declared image type does not match its bytes.");
@@ -61,10 +68,11 @@ public sealed class ImageInputProcessor(IOptions<ImageOptions> options) : IImage
 
     private string ResolveAllowedPath(string value)
     {
-        var path = Path.GetFullPath(value);
+        var path = Path.GetFullPath(value, RuntimePaths.RootDirectory);
+        // 空白名单不是“允许全部”；默认安全边界是已被宿主固定的程序根目录。
         var roots = _options.AllowedRoots.Count == 0
-            ? new[] { Path.GetFullPath(Directory.GetCurrentDirectory()) }
-            : _options.AllowedRoots.Select(Path.GetFullPath);
+            ? new[] { RuntimePaths.RootDirectory }
+            : _options.AllowedRoots.Select(root => Path.GetFullPath(root, RuntimePaths.RootDirectory));
         if (!roots.Any(root => IsWithin(path, root))) throw Security("Image path is outside configured roots.");
         return path;
     }

@@ -12,7 +12,7 @@ public sealed class AuthenticationTests
     [Fact]
     public async Task BootstrapCanOnlyRunOnceAndLoginCarriesTenantClaim()
     {
-        var database = Path.Combine(Path.GetTempPath(), $"muagents-auth-{Guid.NewGuid():N}.db");
+        var database = TestPaths.NewFile(".db");
         try
         {
             var store = new SqliteIdentityStore(Options.Create(new PersistenceOptions
@@ -58,7 +58,7 @@ public sealed class AuthenticationTests
     [Fact]
     public async Task SystemAdministratorCanProvisionUsersTenantsAndMemberships()
     {
-        var database = Path.Combine(Path.GetTempPath(), $"muagents-auth-{Guid.NewGuid():N}.db");
+        var database = TestPaths.NewFile(".db");
         try
         {
             var store = new SqliteIdentityStore(Options.Create(new PersistenceOptions

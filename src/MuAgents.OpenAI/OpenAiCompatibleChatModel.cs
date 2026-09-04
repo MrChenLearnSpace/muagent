@@ -10,6 +10,7 @@ using MuAgents.Abstractions;
 
 namespace MuAgents.OpenAI;
 
+/// <summary>在统一消息/事件模型与三类 OpenAI 兼容 HTTP 协议之间执行双向转换。</summary>
 public sealed class OpenAiCompatibleChatModel(
     HttpClient httpClient,
     IOptions<OpenAiCompatibleOptions> options,
@@ -23,6 +24,7 @@ public sealed class OpenAiCompatibleChatModel(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ValidateRequest(request);
+        // 三种协议只在序列化和事件解释层分叉，AgentRuntime 始终消费同一种 ModelEvent。
         var completion = _options.Protocol switch
         {
             ModelProtocol.ChatCompletions => CompleteChatAsync(request, cancellationToken),
@@ -57,6 +59,7 @@ public sealed class OpenAiCompatibleChatModel(
                 }
                 if (!hasNext) break;
 
+                // 首事件耗时比完整请求耗时更能反映流式交互的用户体感。
                 if (!firstEventObserved)
                 {
                     firstEventObserved = true;
@@ -106,6 +109,7 @@ public sealed class OpenAiCompatibleChatModel(
             ["temperature"] = request.Parameters.Temperature,
             ["tools"] = request.Tools.Count == 0 ? null : BuildChatTools(request.Tools)
         };
+        // Chat Completions 会把一次工具调用的名称和参数拆到多个 delta，按 index 聚合后再上报。
         var calls = new Dictionary<int, CallAccumulator>();
         string? finishReason = null;
 
@@ -186,6 +190,7 @@ public sealed class OpenAiCompatibleChatModel(
             ["temperature"] = request.Parameters.Temperature,
             ["tools"] = request.Tools.Count == 0 ? null : BuildResponsesTools(request.Tools)
         };
+        // Responses 使用 item_id/call_id 关联参数碎片，字典负责跨 SSE 事件恢复完整调用。
         var calls = new Dictionary<string, CallAccumulator>(StringComparer.Ordinal);
         var emitted = new HashSet<string>(StringComparer.Ordinal);
         string? finishReason = null;
@@ -209,54 +214,54 @@ public sealed class OpenAiCompatibleChatModel(
                     yield return new ModelReasoningDelta(GetString(root, "delta") ?? string.Empty);
                     break;
                 case "response.output_item.added":
-                {
-                    if (root.TryGetProperty("item", out var item) && GetString(item, "type") == "function_call")
                     {
-                        var key = GetString(item, "id") ?? GetString(item, "call_id") ?? Guid.NewGuid().ToString("N");
-                        var call = calls[key] = new CallAccumulator();
-                        call.Id.Append(GetString(item, "call_id") ?? GetString(item, "id"));
-                        call.Name.Append(GetString(item, "name"));
-                        call.Arguments.Append(GetString(item, "arguments"));
+                        if (root.TryGetProperty("item", out var item) && GetString(item, "type") == "function_call")
+                        {
+                            var key = GetString(item, "id") ?? GetString(item, "call_id") ?? Guid.NewGuid().ToString("N");
+                            var call = calls[key] = new CallAccumulator();
+                            call.Id.Append(GetString(item, "call_id") ?? GetString(item, "id"));
+                            call.Name.Append(GetString(item, "name"));
+                            call.Arguments.Append(GetString(item, "arguments"));
+                        }
+                        break;
                     }
-                    break;
-                }
                 case "response.function_call_arguments.delta":
-                {
-                    var key = GetString(root, "item_id") ?? GetString(root, "call_id") ?? string.Empty;
-                    if (!calls.TryGetValue(key, out var call))
                     {
-                        call = calls[key] = new CallAccumulator();
-                        call.Id.Append(GetString(root, "call_id") ?? key);
-                        call.Name.Append(GetString(root, "name"));
+                        var key = GetString(root, "item_id") ?? GetString(root, "call_id") ?? string.Empty;
+                        if (!calls.TryGetValue(key, out var call))
+                        {
+                            call = calls[key] = new CallAccumulator();
+                            call.Id.Append(GetString(root, "call_id") ?? key);
+                            call.Name.Append(GetString(root, "name"));
+                        }
+                        call.Arguments.Append(GetString(root, "delta"));
+                        break;
                     }
-                    call.Arguments.Append(GetString(root, "delta"));
-                    break;
-                }
                 case "response.function_call_arguments.done":
-                {
-                    var key = GetString(root, "item_id") ?? GetString(root, "call_id") ?? string.Empty;
-                    if (!calls.TryGetValue(key, out var call))
                     {
-                        call = calls[key] = new CallAccumulator();
+                        var key = GetString(root, "item_id") ?? GetString(root, "call_id") ?? string.Empty;
+                        if (!calls.TryGetValue(key, out var call))
+                        {
+                            call = calls[key] = new CallAccumulator();
+                        }
+                        if (call.Arguments.Length == 0)
+                        {
+                            call.Arguments.Append(GetString(root, "arguments"));
+                        }
+                        if (call.Id.Length == 0)
+                        {
+                            call.Id.Append(GetString(root, "call_id") ?? key);
+                        }
+                        if (call.Name.Length == 0)
+                        {
+                            call.Name.Append(GetString(root, "name"));
+                        }
+                        if (emitted.Add(key))
+                        {
+                            yield return call.ToEvent();
+                        }
+                        break;
                     }
-                    if (call.Arguments.Length == 0)
-                    {
-                        call.Arguments.Append(GetString(root, "arguments"));
-                    }
-                    if (call.Id.Length == 0)
-                    {
-                        call.Id.Append(GetString(root, "call_id") ?? key);
-                    }
-                    if (call.Name.Length == 0)
-                    {
-                        call.Name.Append(GetString(root, "name"));
-                    }
-                    if (emitted.Add(key))
-                    {
-                        yield return call.ToEvent();
-                    }
-                    break;
-                }
                 case "response.completed":
                     if (root.TryGetProperty("response", out var response))
                     {
@@ -305,47 +310,47 @@ public sealed class OpenAiCompatibleChatModel(
             switch (GetString(root, "type"))
             {
                 case "content_block_start":
-                {
-                    var index = GetInt(root, "index");
-                    if (root.TryGetProperty("content_block", out var block) && GetString(block, "type") == "tool_use")
                     {
-                        var call = calls[index] = new CallAccumulator();
-                        call.Id.Append(GetString(block, "id"));
-                        call.Name.Append(GetString(block, "name"));
-                        if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object && input.GetRawText() != "{}")
+                        var index = GetInt(root, "index");
+                        if (root.TryGetProperty("content_block", out var block) && GetString(block, "type") == "tool_use")
                         {
-                            call.Arguments.Append(input.GetRawText());
+                            var call = calls[index] = new CallAccumulator();
+                            call.Id.Append(GetString(block, "id"));
+                            call.Name.Append(GetString(block, "name"));
+                            if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object && input.GetRawText() != "{}")
+                            {
+                                call.Arguments.Append(input.GetRawText());
+                            }
                         }
+                        break;
                     }
-                    break;
-                }
                 case "content_block_delta":
-                {
-                    var index = GetInt(root, "index");
-                    if (!root.TryGetProperty("delta", out var delta)) break;
-                    switch (GetString(delta, "type"))
                     {
-                        case "text_delta":
-                            yield return new ModelTextDelta(GetString(delta, "text") ?? string.Empty);
-                            break;
-                        case "thinking_delta":
-                            yield return new ModelReasoningDelta(GetString(delta, "thinking") ?? string.Empty);
-                            break;
-                        case "input_json_delta" when calls.TryGetValue(index, out var call):
-                            call.Arguments.Append(GetString(delta, "partial_json"));
-                            break;
+                        var index = GetInt(root, "index");
+                        if (!root.TryGetProperty("delta", out var delta)) break;
+                        switch (GetString(delta, "type"))
+                        {
+                            case "text_delta":
+                                yield return new ModelTextDelta(GetString(delta, "text") ?? string.Empty);
+                                break;
+                            case "thinking_delta":
+                                yield return new ModelReasoningDelta(GetString(delta, "thinking") ?? string.Empty);
+                                break;
+                            case "input_json_delta" when calls.TryGetValue(index, out var call):
+                                call.Arguments.Append(GetString(delta, "partial_json"));
+                                break;
+                        }
+                        break;
                     }
-                    break;
-                }
                 case "content_block_stop":
-                {
-                    var index = GetInt(root, "index");
-                    if (calls.Remove(index, out var call))
                     {
-                        yield return call.ToEvent();
+                        var index = GetInt(root, "index");
+                        if (calls.Remove(index, out var call))
+                        {
+                            yield return call.ToEvent();
+                        }
+                        break;
                     }
-                    break;
-                }
                 case "message_start":
                     if (root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var startUsage))
                     {
@@ -400,6 +405,7 @@ public sealed class OpenAiCompatibleChatModel(
             }
         }
 
+        // ResponseHeadersRead 防止 HttpClient 等待完整响应缓冲，收到 SSE 后即可逐行产出事件。
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -416,6 +422,7 @@ public sealed class OpenAiCompatibleChatModel(
         using var reader = new StreamReader(stream);
         while (await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
         {
+            // SSE 允许 event/id 等字段；模型负载只取 data 行，并由各协议解析器解释 JSON。
             if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
             {
                 yield return line[5..].TrimStart();
