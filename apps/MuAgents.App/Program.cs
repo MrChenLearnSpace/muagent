@@ -32,6 +32,9 @@ var projectSettingsPath = RuntimePaths.ResolveWritePath(
     Path.Combine("config", "muagents.settings.json"),
     "project MuAgents settings path");
 Directory.CreateDirectory(projectConfigurationDirectory);
+// 首次启动复制项目级运行配置；升级或重新发布时只替换安装目录模板，不覆盖项目已有配置。
+if (!File.Exists(projectAppSettingsPath))
+    File.Copy(Path.Combine(RuntimePaths.ApplicationDirectory, "appsettings.json"), projectAppSettingsPath);
 // 每个项目首次启动时获得一份独立模板，之后升级程序不会覆盖项目自己的模型和认证配置。
 if (!File.Exists(projectSettingsPath)) File.Copy(packagedSettingsPath, projectSettingsPath);
 

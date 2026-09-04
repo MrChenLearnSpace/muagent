@@ -174,7 +174,7 @@ my-project/                       # APP 的 -d 项目目录或 APP 启动目录
 └─ ...                            # 项目源码和其他文件
 ```
 
-APP 的文件读取、图片、控制台工作目录和 Skill/MCP 相对路径以 APP 项目根解析；数据库、密钥、配置、临时目录和运行时缓存以 `.muagent/` 解析。所有 APP 管理的可写状态如果逃逸 `.muagent/` 都会被拒绝。用户目录、应用数据、ProgramData、XDG、`TEMP`、`DOTNET_CLI_HOME` 和 NuGet 等可写环境变量均重定向到 `.muagent/data/`，命令参数不能覆盖这些保护。CLI 的 `/add .` 则以 CLI 当前终端目录为准，文件内容通过认证 API 上传，不让 APP 按客户端路径读取磁盘。
+APP 的文件读取、图片、控制台工作目录和 Skill/MCP 相对路径以 APP 项目根解析；数据库、密钥、配置、临时目录和运行时缓存以 `.muagent/` 解析。首次启动会自动复制配置模板到项目 `.muagent/config/`，后续升级或重新编译不会覆盖项目副本。所有 APP 管理的可写状态如果逃逸 `.muagent/` 都会被拒绝。用户目录、应用数据、ProgramData、XDG、`TEMP`、`DOTNET_CLI_HOME` 和 NuGet 等可写环境变量均重定向到 `.muagent/data/`，命令参数不能覆盖这些保护。CLI 的 `/add .` 则以 CLI 当前终端目录为准，文件内容通过认证 API 上传，不让 APP 按客户端路径读取磁盘。
 
 ## 文档
 

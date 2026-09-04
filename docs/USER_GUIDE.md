@@ -24,6 +24,8 @@
 
 ## 2. 配置文件与加载顺序
 
+首次启动会自动把安装目录的 `appsettings.json` 和 `muagents.settings.json` 模板复制到项目 `.muagent/config/`；后续升级、重新编译或替换 `publish` 目录都不会覆盖项目配置。请修改项目目录下的副本，避免直接修改发布目录模板。
+
 API 应用按以下顺序加载 JSON 配置：
 
 1. `<程序安装目录>/appsettings.json`：随程序发布的非敏感默认值；
