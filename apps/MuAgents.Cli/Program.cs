@@ -76,7 +76,7 @@ var conversationId = conversationSelection.Id;
 Console.WriteLine(conversationSelection.Resumed
     ? $"已恢复最近会话 {conversationId}，历史上下文会继续发送给模型。输入 /new 可创建新会话。"
     : $"已创建 MuAgents 会话 {conversationId}。输入 /help 查看命令。");
-TerminalTheme.WriteHint("输入支持多行：Enter 换行，Shift+Enter 发送，↑/↓ 查看历史指令。\n");
+TerminalTheme.WriteHint("输入支持多行：Enter 发送，Shift+Enter 换行，↑/↓ 查看历史指令。\n");
 
 while (true)
 {

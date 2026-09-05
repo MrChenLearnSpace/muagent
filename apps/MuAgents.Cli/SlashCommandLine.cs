@@ -208,6 +208,7 @@ public static class SlashCommandLine
         ref int renderedBottom)
     {
         var width = Math.Max(2, Console.BufferWidth);
+        EnsureRenderSpace(prompt, buffer, width, ref renderTop, ref renderedBottom);
         for (var row = renderTop; row <= renderedBottom && row < Console.BufferHeight; row++)
         {
             Console.SetCursorPosition(0, row);
@@ -221,20 +222,60 @@ public static class SlashCommandLine
         var cursorTop = Console.CursorTop;
         TerminalTheme.WriteUserInput(FormatMultiline(buffer.ToString(cursor, buffer.Length - cursor), prompt.Length));
         renderedBottom = Math.Max(cursorTop, Console.CursorTop);
-        if (renderedBottom >= Console.BufferHeight)
-        {
-            var shift = renderedBottom - Console.BufferHeight + 1;
-            renderTop = Math.Max(0, renderTop - shift);
-            renderedBottom = Console.BufferHeight - 1;
-            cursorTop = Math.Max(0, cursorTop - shift);
-        }
         Console.SetCursorPosition(cursorLeft, cursorTop);
+    }
+
+    private static void EnsureRenderSpace(
+        string prompt,
+        StringBuilder buffer,
+        int width,
+        ref int renderTop,
+        ref int renderedBottom)
+    {
+        var requiredRows = CalculateRenderedRowCount(prompt, buffer.ToString(), width);
+        var overflow = renderTop + requiredRows - Console.BufferHeight;
+        if (overflow <= 0) return;
+
+        // Writing beyond the last buffer row scrolls all existing content upward.
+        // Move the saved input bounds by the same amount before redrawing them.
+        Console.SetCursorPosition(0, Console.BufferHeight - 1);
+        for (var row = 0; row < overflow; row++) Console.WriteLine();
+        renderTop = Math.Max(0, renderTop - overflow);
+        renderedBottom = Math.Max(renderTop, renderedBottom - overflow);
+    }
+
+    public static int CalculateRenderedRowCount(string prompt, string value, int width)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
+        var text = prompt + FormatMultiline(value, prompt.Length);
+        var rows = 1;
+        var column = 0;
+        foreach (var character in text)
+        {
+            if (character == '\r')
+            {
+                column = 0;
+                continue;
+            }
+            if (character == '\n')
+            {
+                rows++;
+                column = 0;
+                continue;
+            }
+
+            column++;
+            if (column < width) continue;
+            rows++;
+            column = 0;
+        }
+        return rows;
     }
 
     private static string FormatMultiline(string value, int promptLength) =>
         value.Replace("\n", Environment.NewLine + new string(' ', promptLength), StringComparison.Ordinal);
 
     public static bool IsSubmitKey(ConsoleKeyInfo key) =>
-        key.Key == ConsoleKey.Enter && key.Modifiers.HasFlag(ConsoleModifiers.Shift);
+        key.Key == ConsoleKey.Enter && !key.Modifiers.HasFlag(ConsoleModifiers.Shift);
 
 }

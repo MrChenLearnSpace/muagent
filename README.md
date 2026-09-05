@@ -75,7 +75,7 @@ MuAgents 是一个基于 .NET 8 的跨平台智能体运行时。项目提供流
 
    `--bootstrap` 继续作为 `--setup-password` 的兼容别名。密码长度必须满足 `MinimumPasswordLength`，默认至少 12 个字符。
 
-进入 CLI 后，用户输入以亮青色粗体 `YOU ›` 显示，Agent 以亮绿色 `AGENT ›` 显示。`Enter` 插入换行，`Shift+Enter` 才发送完整输入，`↑/↓` 可浏览本次运行已经提交的历史指令。输入 `/` 再按 `Tab` 会列出命令，输入唯一前缀（例如 `/mcp_d`）再按 `Tab` 会补全命令。Agent 返回的常用 Markdown 会渲染为终端标题、列表、引用、代码块、粗体、行内代码和链接。也可直接使用：
+进入 CLI 后，用户输入以亮青色粗体 `YOU ›` 显示，Agent 以亮绿色 `AGENT ›` 显示。`Enter` 发送完整输入，`Shift+Enter` 插入换行，`↑/↓` 可浏览本次运行已经提交的历史指令。输入 `/` 再按 `Tab` 会列出命令，输入唯一前缀（例如 `/mcp_d`）再按 `Tab` 会补全命令。Agent 返回的常用 Markdown 会渲染为终端标题、列表、引用、代码块、粗体、行内代码和链接。也可直接使用：
 
 ```text
 /help                  查看所有命令

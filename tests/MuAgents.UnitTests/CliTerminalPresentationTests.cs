@@ -1,13 +1,21 @@
 public sealed class CliTerminalPresentationTests
 {
     [Fact]
-    public void SubmitKey_RequiresShiftAndEnterTogether()
+    public void SubmitKey_UsesEnterWithoutShift()
     {
         var enter = new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false);
         var shiftEnter = new ConsoleKeyInfo('\r', ConsoleKey.Enter, true, false, false);
 
-        Assert.False(SlashCommandLine.IsSubmitKey(enter));
-        Assert.True(SlashCommandLine.IsSubmitKey(shiftEnter));
+        Assert.True(SlashCommandLine.IsSubmitKey(enter));
+        Assert.False(SlashCommandLine.IsSubmitKey(shiftEnter));
+    }
+
+    [Fact]
+    public void RenderedRowCount_ReservesSpaceForEveryInputLine()
+    {
+        Assert.Equal(1, SlashCommandLine.CalculateRenderedRowCount("YOU > ", "hello", 80));
+        Assert.Equal(2, SlashCommandLine.CalculateRenderedRowCount("YOU > ", "hello\nworld", 80));
+        Assert.Equal(3, SlashCommandLine.CalculateRenderedRowCount("YOU > ", "one\ntwo\nthree", 80));
     }
 
     [Fact]
