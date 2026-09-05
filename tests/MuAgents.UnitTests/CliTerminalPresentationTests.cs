@@ -8,6 +8,9 @@ public sealed class CliTerminalPresentationTests
 
         Assert.True(SlashCommandLine.IsSubmitKey(enter));
         Assert.False(SlashCommandLine.IsSubmitKey(shiftEnter));
+        Assert.False(SlashCommandLine.IsPasteLineBreak(enter, false));
+        Assert.True(SlashCommandLine.IsPasteLineBreak(enter, true));
+        Assert.True(SlashCommandLine.IsPasteLineBreak(shiftEnter, false));
     }
 
     [Fact]

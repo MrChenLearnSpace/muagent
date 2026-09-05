@@ -90,7 +90,11 @@ public static class SlashCommandLine
         while (true)
         {
             var key = Console.ReadKey(intercept: true);
-            if (IsSubmitKey(key))
+            // Windows Terminal pastes multiline text as a burst of key events. If
+            // another event is already queued after Enter, that Enter belongs to
+            // the paste and must become a line break rather than submitting.
+            var pasteContinues = key.Key == ConsoleKey.Enter && Console.KeyAvailable;
+            if (IsSubmitKey(key) && !pasteContinues)
             {
                 MoveToRenderedBottom(renderedBottom);
                 Console.WriteLine();
@@ -98,7 +102,7 @@ public static class SlashCommandLine
                 if (!string.IsNullOrWhiteSpace(value) && (History.Count == 0 || History[^1] != value)) History.Add(value);
                 return value;
             }
-            if (key.Key == ConsoleKey.Enter)
+            if (IsPasteLineBreak(key, pasteContinues))
             {
                 buffer.Insert(cursor, '\n');
                 cursor++;
@@ -277,5 +281,9 @@ public static class SlashCommandLine
 
     public static bool IsSubmitKey(ConsoleKeyInfo key) =>
         key.Key == ConsoleKey.Enter && !key.Modifiers.HasFlag(ConsoleModifiers.Shift);
+
+    public static bool IsPasteLineBreak(ConsoleKeyInfo key, bool inputPending) =>
+        key.Key == ConsoleKey.Enter &&
+        (key.Modifiers.HasFlag(ConsoleModifiers.Shift) || inputPending);
 
 }
